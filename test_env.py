@@ -40,9 +40,9 @@ def test_valid_actions():
         
         # Should have at least end_turn action
         assert len(actions) > 0, f"Civ {civ_id} should have at least one valid action"
-        
+
         # Check action types
-        action_types = set(type(a).__name__ for a in actions)
+        action_types = {type(a).__name__ for a in actions}
         print(f"    Action types: {action_types}")
     
     print("  ✓ All civs have valid actions")
@@ -84,10 +84,10 @@ def test_heuristic_agents():
     print("\nTesting heuristic agents...")
     env = make_env(num_civilizations=4, map_width=15, map_height=15, max_turns=50, seed=42)
     obs = env.reset()
-    
+
     # Create agents with different personalities
     agents = {
-        0: HeuristicAgent(0, AgentPersonality.MILITARIST, seed=0),
+        0: HeuristicAgent(0, AgentPersonality.EXPANSIONIST, seed=0),
         1: HeuristicAgent(1, AgentPersonality.ECONOMIST, seed=1),
         2: HeuristicAgent(2, AgentPersonality.DIPLOMAT, seed=2),
         3: HeuristicAgent(3, AgentPersonality.BALANCED, seed=3),
