@@ -33,14 +33,14 @@ from typing import TYPE_CHECKING
 from ..data_types import (
     Action, ActionType, Build, BuildType, BuyDevCard, DevCardType,
     DivineIntervention, EndTurn, MAX_TURNS, Observation, PlayDevCard,
-    ResourceType, TradeProposal, WIN_THRESHOLD,
+    ReestablishBuilding, ResourceType, TradeProposal, WIN_THRESHOLD,
 )
 
 if TYPE_CHECKING:
     pass
 
 STATE_DIM = 39
-ACTION_DIM = 14
+ACTION_DIM = 15
 
 
 def encode_observation(obs: Observation) -> list[float]:
@@ -141,7 +141,7 @@ def encode_action(action: Action) -> list[float]:
     """Convert an Action into a fixed-size float vector."""
     f = [0.0] * ACTION_DIM
 
-    # Action type one-hot [0:6]
+    # Action type one-hot [0:7]
     type_map = {
         ActionType.BUILD: 0,
         ActionType.TRADE: 1,
@@ -149,22 +149,27 @@ def encode_action(action: Action) -> list[float]:
         ActionType.PLAY_DEV: 3,
         ActionType.DIVINE: 4,
         ActionType.END_TURN: 5,
+        ActionType.REESTABLISH: 6,
     }
     f[type_map[action.action_type]] = 1.0
 
-    # Build subtype [6:9]
+    # Build subtype [7:10] — shared between Build and ReestablishBuilding.
+    # The network can distinguish "build new" vs "reestablish" via the
+    # action-type bit at index 6; the build subtype tells it what kind.
+    build_map = {BuildType.ROAD: 7, BuildType.SETTLEMENT: 8, BuildType.CITY: 9}
     if isinstance(action, Build):
-        build_map = {BuildType.ROAD: 6, BuildType.SETTLEMENT: 7, BuildType.CITY: 8}
+        f[build_map[action.build_type]] = 1.0
+    elif isinstance(action, ReestablishBuilding):
         f[build_map[action.build_type]] = 1.0
 
-    # Dev card subtype [9:14]
+    # Dev card subtype [10:15]
     if isinstance(action, PlayDevCard):
         dev_map = {
-            DevCardType.EXPANSIONIST: 9,
-            DevCardType.ESPIONAGE: 10,
-            DevCardType.MAINTENANCE: 11,
-            DevCardType.INVENTION: 12,
-            DevCardType.PLUNDER: 13,
+            DevCardType.EXPANSIONIST: 10,
+            DevCardType.ESPIONAGE: 11,
+            DevCardType.MAINTENANCE: 12,
+            DevCardType.INVENTION: 13,
+            DevCardType.PLUNDER: 14,
         }
         f[dev_map[action.card_type]] = 1.0
 

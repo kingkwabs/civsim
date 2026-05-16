@@ -9,7 +9,8 @@ from typing import Optional
 from .data_types import (
     Action, ActionType, Build, BuildType, BuyDevCard, DevCardType,
     DivineIntervention, EdgeID, EndTurn, IntersectionID, Observation,
-    PlayDevCard, ResourceType, TradeProposal, WIN_THRESHOLD,
+    PlayDevCard, ReestablishBuilding, ResourceType, TradeProposal,
+    WIN_THRESHOLD,
 )
 from .upkeep import (
     buildings_at_risk_from_obs, upkeep_gap_from_obs, upkeep_pressure_from_obs,
@@ -281,6 +282,14 @@ class GreedyAgent(Agent):
         elif isinstance(action, DivineIntervention):
             # Miracle outcome (5%) grants +2 PP, valuable when very close.
             return 20.0 + urgency * 30.0
+
+        elif isinstance(action, ReestablishBuilding):
+            # Re-establishing an abandoned city is a +4 PP instant payoff;
+            # a settlement is +2 PP. The premium cost (vs original build) is
+            # worth it when close to threshold or when the position is good.
+            if action.build_type == BuildType.CITY:
+                return 110.0 + urgency * 160.0
+            return 85.0 + urgency * 50.0
 
         elif isinstance(action, TradeProposal):
             return self._score_trade(
@@ -606,11 +615,11 @@ class MCTSAgent(Agent):
     def _find_all_in_action(
         self, obs: Observation, valid_actions: list[Action]
     ) -> Optional[Action]:
-        """Return a Build action that would push us to WIN_THRESHOLD, or None.
+        """Return any single action that would push us to WIN_THRESHOLD.
 
-        Skips actions already known to have failed this turn — otherwise we'd
-        keep re-proposing the same losing build and bypass MCTS's natural
-        diversification.
+        Considers Build and ReestablishBuilding (which grants the full
+        building's PP since we don't already own an unupgraded version).
+        Skips actions already known to have failed this turn.
         """
         from .data_types import CITY_PP, SETTLEMENT_PP
         my_pp = 0
@@ -622,15 +631,19 @@ class MCTSAgent(Agent):
             elif inter.building == BuildType.CITY:
                 my_pp += CITY_PP
         for a in valid_actions:
-            if not isinstance(a, Build):
-                continue
             if _action_key(a) in self._failed_this_turn:
                 continue
-            if a.build_type == BuildType.SETTLEMENT:
-                gain = SETTLEMENT_PP
-            elif a.build_type == BuildType.CITY:
-                gain = CITY_PP - SETTLEMENT_PP
-            else:  # ROAD
+            if isinstance(a, Build):
+                if a.build_type == BuildType.SETTLEMENT:
+                    gain = SETTLEMENT_PP
+                elif a.build_type == BuildType.CITY:
+                    gain = CITY_PP - SETTLEMENT_PP
+                else:
+                    continue
+            elif isinstance(a, ReestablishBuilding):
+                # Re-establish grants the building's full PP (no prior owner)
+                gain = SETTLEMENT_PP if a.build_type == BuildType.SETTLEMENT else CITY_PP
+            else:
                 continue
             if my_pp + gain >= WIN_THRESHOLD:
                 return a

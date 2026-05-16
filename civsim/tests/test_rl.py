@@ -50,17 +50,17 @@ class TestFeatureEncoding:
     def test_action_encoding_build_road(self):
         f = encode_action(Build(BuildType.ROAD, 0))
         assert f[0] == 1.0  # BUILD is index 0
-        assert f[6] == 1.0  # ROAD is index 6
+        assert f[7] == 1.0  # ROAD is index 7
 
     def test_action_encoding_build_settlement(self):
         f = encode_action(Build(BuildType.SETTLEMENT, 0))
         assert f[0] == 1.0
-        assert f[7] == 1.0  # SETTLEMENT is index 7
+        assert f[8] == 1.0  # SETTLEMENT is index 8
 
     def test_action_encoding_build_city(self):
         f = encode_action(Build(BuildType.CITY, 0))
         assert f[0] == 1.0
-        assert f[8] == 1.0  # CITY is index 8
+        assert f[9] == 1.0  # CITY is index 9
 
     def test_action_encoding_buy_dev(self):
         f = encode_action(BuyDevCard())
@@ -69,7 +69,13 @@ class TestFeatureEncoding:
     def test_action_encoding_play_dev(self):
         f = encode_action(PlayDevCard(DevCardType.ESPIONAGE))
         assert f[3] == 1.0  # PLAY_DEV is index 3
-        assert f[10] == 1.0  # ESPIONAGE is index 10
+        assert f[11] == 1.0  # ESPIONAGE is index 11
+
+    def test_action_encoding_reestablish(self):
+        from civsim.data_types import ReestablishBuilding
+        f = encode_action(ReestablishBuilding(BuildType.CITY, 0))
+        assert f[6] == 1.0  # REESTABLISH is index 6
+        assert f[9] == 1.0  # CITY subtype also set (shared slot with Build)
 
     def test_all_action_types_encode_differently(self):
         actions = [

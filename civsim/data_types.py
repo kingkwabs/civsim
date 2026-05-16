@@ -31,6 +31,7 @@ class ActionType(Enum):
     PLAY_DEV = auto()
     DIVINE = auto()
     END_TURN = auto()
+    REESTABLISH = auto()
 
 
 class DevCardType(Enum):
@@ -185,6 +186,22 @@ class DivineIntervention(Action):
 class EndTurn(Action):
     def __init__(self):
         super().__init__(action_type=ActionType.END_TURN)
+
+
+@dataclass
+class ReestablishBuilding(Action):
+    """Claim an abandoned building (settlement or city) for higher resources
+    than the original build cost. The building must already exist on the
+    board with no owner — typically because some prior owner failed
+    maintenance or got hit by the plague divine outcome.
+    """
+    build_type: BuildType  # which kind of building is being re-established
+    position: int          # intersection_id
+
+    def __init__(self, build_type: BuildType, position: int):
+        super().__init__(action_type=ActionType.REESTABLISH)
+        self.build_type = build_type
+        self.position = position
 
 
 # ── Observation ──────────────────────────────────────────────────────────

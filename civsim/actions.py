@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 from .data_types import (
     Action, Build, BuildType, BUILDING_COSTS, BuyDevCard, DEV_CARD_COST,
     DIVINE_COST, DivineIntervention, EndTurn, PlayDevCard, PortType,
-    ResourceDict, ResourceType, TradeProposal, TRADE_CAP_PER_TURN,
+    REESTABLISHMENT_COSTS, ReestablishBuilding, ResourceDict, ResourceType,
+    TradeProposal, TRADE_CAP_PER_TURN,
 )
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 def get_valid_actions(state: GameState, player_id: int) -> list[Action]:
     actions: list[Action] = []
     actions += _get_valid_build_actions(state, player_id)
+    actions += _get_valid_reestablish_actions(state, player_id)
     # Throttle trades: once a player has burned TRADE_CAP_PER_TURN attempts
     # this turn, stop offering trade actions entirely.
     if state.players[player_id].trades_this_turn < TRADE_CAP_PER_TURN:
@@ -28,6 +30,28 @@ def get_valid_actions(state: GameState, player_id: int) -> list[Action]:
     if _can_divine_intervention(state, player_id):
         actions.append(DivineIntervention())
     actions.append(EndTurn())
+    return actions
+
+
+def _get_valid_reestablish_actions(
+    state: GameState, player_id: int
+) -> list[ReestablishBuilding]:
+    """Return all abandoned buildings the player can afford to reclaim.
+
+    Re-establishment costs more than the original build (see
+    REESTABLISHMENT_COSTS) because the player is paying a premium to
+    take over someone else's lost work.
+    """
+    player = state.players[player_id]
+    actions: list[ReestablishBuilding] = []
+    for inter in state.board.intersections.values():
+        if inter.building is None or inter.owner is not None:
+            continue
+        cost = REESTABLISHMENT_COSTS.get(inter.building)
+        if cost is None:
+            continue
+        if _player_can_afford(player.resources, cost):
+            actions.append(ReestablishBuilding(inter.building, inter.inter_id))
     return actions
 
 

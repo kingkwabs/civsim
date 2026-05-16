@@ -6,9 +6,10 @@ from typing import TYPE_CHECKING, Optional
 
 from .data_types import (
     Action, ActionResult, ActionType, Build, BuildType, BUILDING_COSTS,
-    BuyDevCard, DEV_CARD_COST, DevCardType, DIVINE_COST, DIVINE_EVENTS,
-    DivineIntervention, EndTurn, MAINTENANCE_COSTS, PlayDevCard, ResourceDict,
-    ResourceType, TradeProposal,
+    BuyDevCard, CITY_PP, DEV_CARD_COST, DevCardType, DIVINE_COST,
+    DIVINE_EVENTS, DivineIntervention, EndTurn, MAINTENANCE_COSTS,
+    PlayDevCard, REESTABLISHMENT_COSTS, ReestablishBuilding, ResourceDict,
+    ResourceType, SETTLEMENT_PP, TradeProposal,
 )
 
 if TYPE_CHECKING:
@@ -34,8 +35,49 @@ def execute_action(
         return execute_divine_intervention(state, player_id)
     elif isinstance(action, EndTurn):
         return ActionResult(success=True, action=action, description="Turn ended")
+    elif isinstance(action, ReestablishBuilding):
+        return execute_reestablish(state, player_id, action)
     else:
         return ActionResult(success=False, action=action, description="Unknown action type")
+
+
+def execute_reestablish(
+    state: GameState, player_id: int, action: ReestablishBuilding
+) -> ActionResult:
+    """Claim an abandoned building at the (higher) re-establishment cost."""
+    player = state.players[player_id]
+    inter = state.board.intersections.get(action.position)
+    if inter is None or inter.building is None or inter.owner is not None:
+        return ActionResult(
+            success=False, action=action,
+            description="Target intersection is not abandoned",
+        )
+    if inter.building != action.build_type:
+        return ActionResult(
+            success=False, action=action,
+            description=f"Building type mismatch (expected {action.build_type.name})",
+        )
+    cost = REESTABLISHMENT_COSTS.get(action.build_type)
+    if cost is None:
+        return ActionResult(success=False, action=action,
+                            description="No re-establishment cost defined")
+    if not player.can_afford(cost):
+        return ActionResult(success=False, action=action,
+                            description="Insufficient resources to re-establish")
+
+    _deduct_resources(state, player_id, cost)
+    state.board.claim_building(player_id, action.position)
+    # Award progress points immediately; end-of-turn update_progress_points
+    # will normalize against the live board anyway.
+    if action.build_type == BuildType.SETTLEMENT:
+        player.progress_points += SETTLEMENT_PP
+    else:
+        player.progress_points += CITY_PP
+    player.stats.record_build(action.build_type)
+    return ActionResult(
+        success=True, action=action,
+        description=f"Re-established {action.build_type.name.lower()} at i{action.position}",
+    )
 
 
 # ── Build ────────────────────────────────────────────────────────────────

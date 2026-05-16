@@ -145,8 +145,8 @@ class RLAgent(Agent):
              call, since the new road opens fresh valid settlement spots).
         """
         from ..data_types import (
-            BUILDING_COSTS, Build, BuildType, CITY_PP, ResourceType,
-            SETTLEMENT_PP, WIN_THRESHOLD,
+            BUILDING_COSTS, Build, BuildType, CITY_PP,
+            ReestablishBuilding, ResourceType, SETTLEMENT_PP, WIN_THRESHOLD,
         )
 
         # Current PP from board state (don't trust stale cached value)
@@ -167,7 +167,14 @@ class RLAgent(Agent):
         city_action = None
         settlement_action = None
         road_action = None
+        reestablish_action = None
         for a in valid_actions:
+            if isinstance(a, ReestablishBuilding):
+                # Re-establish grants the building's full PP (no prior owner)
+                gain = SETTLEMENT_PP if a.build_type == BuildType.SETTLEMENT else CITY_PP
+                if my_pp + gain >= WIN_THRESHOLD and reestablish_action is None:
+                    reestablish_action = a
+                continue
             if not isinstance(a, Build):
                 continue
             if a.build_type == BuildType.CITY:
@@ -179,6 +186,9 @@ class RLAgent(Agent):
             elif a.build_type == BuildType.ROAD and road_action is None:
                 road_action = a
 
+        # Prefer re-establish (often grabs a city = +4 PP instantly)
+        if reestablish_action is not None:
+            return reestablish_action
         if city_action is not None:
             return city_action
         if settlement_action is not None:
