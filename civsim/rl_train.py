@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .agents import GreedyAgent, RandomAgent
 from .environment import Environment
-from .rl import PolicyValueNetwork, RLAgent, RLTrainer
+from .rl import PolicyValueNetwork, RLAgent, RLTrainer, bc_train, collect_demonstrations
 
 
 def make_selfplay_factory(
@@ -157,6 +157,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--print-every", type=int, default=25)
     p.add_argument("--save-path", default="rl_model.pt")
+    p.add_argument("--bc-games", type=int, default=0,
+                   help="Phase 0: collect demonstrations from N Greedy-vs-Greedy games "
+                        "where someone reached the win threshold, then behavior-clone "
+                        "the network on them before phase 1. 0 disables.")
+    p.add_argument("--bc-epochs", type=int, default=20,
+                   help="Epochs of behavior cloning over the demo set")
+    p.add_argument("--bc-lr", type=float, default=1e-3,
+                   help="Learning rate for BC pretraining")
     p.add_argument("--smoke", action="store_true",
                    help="Fast sanity check: 10+10+10 episodes, tiny eval")
     args = p.parse_args(argv)
@@ -168,8 +176,29 @@ def main(argv: list[str] | None = None) -> int:
         args.snapshot_interval = 5
         args.eval_games = 3
         args.print_every = 5
+        if args.bc_games:
+            args.bc_games = 20
+            args.bc_epochs = 5
 
     network = PolicyValueNetwork()
+
+    if args.bc_games > 0:
+        print(f"=== Phase 0: collecting demonstrations from {args.bc_games} "
+              f"Greedy-vs-Greedy games ===", flush=True)
+        t0 = time.time()
+        demos = collect_demonstrations(n_games=args.bc_games)
+        print(f"  Collected {len(demos)} demos in {time.time()-t0:.1f}s", flush=True)
+        if demos:
+            print(f"=== Phase 0b: behavior cloning "
+                  f"({args.bc_epochs} epochs, lr={args.bc_lr}) ===", flush=True)
+            t0 = time.time()
+            bc_train(network, demos, n_epochs=args.bc_epochs, lr=args.bc_lr)
+            print(f"  BC done in {time.time()-t0:.1f}s", flush=True)
+        else:
+            print(f"  WARNING: 0 threshold-winning games out of {args.bc_games}. "
+                  f"Skipping BC.", flush=True)
+        print(flush=True)
+
     print(f"=== Phase 1: training vs Random ({args.episodes_random} episodes) ===", flush=True)
     t0 = time.time()
     trainer = RLTrainer(network, num_players=3, lr=args.lr, gamma=args.gamma,

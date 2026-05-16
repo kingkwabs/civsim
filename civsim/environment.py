@@ -113,9 +113,11 @@ class Environment:
 
         return obs, reward, done, info
 
-    def run_game(self) -> GameResult:
-        """Play a complete game and return results."""
-        obs = self.reset()
+    def run_game(self, seed: Optional[int] = None) -> GameResult:
+        """Play a complete game and return results. Pass `seed` to fully
+        determinize the game state RNG (board layout, dice, weather,
+        divine outcomes); leave None for a fresh random game."""
+        obs = self.reset(seed=seed)
 
         while not self.state.game_over:
             pid = self.state.current_player
@@ -139,11 +141,11 @@ class Environment:
         if self.renderer is not None:
             if rained:
                 self.renderer.render_event(
-                    f"🌧  Turn {self.state.turn_number}: rain — +1 water for all players"
+                    f"[RAIN]  Turn {self.state.turn_number}: +1 water for all players"
                 )
             if barned:
                 self.renderer.render_event(
-                    f"🐄 Turn {self.state.turn_number}: barn day — +1 cow for all players"
+                    f"[BARN]  Turn {self.state.turn_number}: +1 cow for all players"
                 )
 
     def _run_action_loop(self, player_id: int, agent: Agent) -> None:
@@ -173,7 +175,16 @@ class Environment:
             if self.renderer is not None:
                 self.renderer.render(self.state, last_action=result)
 
-            if self.state.game_over:
+            # Check win condition after every action — a build can push us
+            # to WIN_THRESHOLD mid-turn, and we shouldn't keep playing past
+            # that. Without this, maintenance at end-of-turn can silently
+            # revert the win.
+            if self.state.is_game_over():
+                if self.renderer is not None:
+                    self.renderer.render_event(
+                        f"=== Game over: winner = P{self.state.winner} "
+                        f"(turn {self.state.turn_number}) ==="
+                    )
                 return
 
             if result.success:

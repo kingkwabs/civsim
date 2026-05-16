@@ -2,26 +2,42 @@
 
 ## Project Overview
 
-CivSim is a Catan-style board game engine for CS 4701 (AI). It simulates a multiplayer resource-trading game with custom mechanics (per-turn maintenance, divine intervention, unique dev cards, weather events) and serves as an environment for training and evaluating four AI agents at distinct complexity tiers.
+CivSim is a Catan-style board game engine for CS 4701 (AI). It simulates a multiplayer resource-trading game with custom mechanics (per-turn maintenance, divine intervention, unique dev cards, weather events, coastal trading ports) and serves as an environment for training and evaluating four AI agents at distinct complexity tiers. Includes both a terminal renderer and a Colonist-inspired matplotlib GUI for demos.
 
 ---
 
 ## Headline Result
 
-| Agent | Method | Win rate vs 2 Greedy |
-|---|---|---|
-| Random | Uniform action selection | ~3% |
-| Greedy | Hand-tuned heuristic (upkeep-aware, target-aware) | ~15% |
-| MCTS | K=5 pruning + PUCT + RL policy/value priors + tuned c_puct/temp | ~15% |
-| **RL** | Actor-Critic + REINFORCE + curriculum + self-play | **70%** |
+The headline table below uses **threshold wins** (player actually reached 10 PP before turn 200) as the meaningful measure of "winning the game" — not just "had the highest score at the turn cap." See the framing note below for why this distinction matters.
 
-The RL agent **convincingly** beats two Greedys (60-game evaluation). MCTS reaches parity with Greedy. The relative ordering (Random < Greedy ≈ MCTS << RL) is methodologically clean: learned policy dominates fixed-budget tree search in this large-action-space domain.
+| Agent | Method | Threshold-win rate vs 2 Greedy | Total "wins" (incl. turn-cap) | Sample |
+|---|---|---|---|---|
+| Random | Uniform action selection | ~0% | ~3% | 30 games |
+| Greedy | Hand-tuned heuristic (upkeep / target / port-aware) | ~25-30% | ~30% | 90+ games |
+| MCTS | K=5 pruning + PUCT + RL policy/value priors + tuned c_puct/temp | ~5-10% | ~15-20% | 30+ games |
+| **RL** | Actor-Critic + REINFORCE + curriculum + self-play + inference override | **~27%** (24/90) | **~43%** | 90 games |
+
+RL wins by actually reaching 10 PP about as often as Greedy does, and outscores Greedy slightly when accounting for both threshold and tiebreaker wins. The methodological ordering (Random < MCTS < Greedy ≈ RL) holds. Learned policy and hand-tuned heuristic are roughly matched in *real* win rate; the project's interest is now in the difference in *how* they win (RL via faster decisive games, Greedy via volume of medium-length wins).
+
+**Why threshold wins are the right metric (and why the "headline win rate" trajectory we observed needs context).** The engine has a turn-cap fallback: if no one reaches 10 PP by turn 200, the player with the highest PP is declared "winner." Earlier in the project we measured "win rate" by this combined criterion and saw RL at 70%. Over time we made Greedy stronger (port-aware draft, trade cap, etc.) and that headline number dropped to ~46% — which sounds like regression. But when we finally checked the *composition* of those wins, we discovered that an earlier RL training run was winning 95% of its games via turn-cap fallback (stalling at 8 PP, outscoring Greedy when the timer expired) and only 2/90 by actually crossing the threshold. That's an artifact of optimizing against a tiebreaker, not a real win.
+
+A subsequent retrain (same code, different RNG seed) produced a *qualitatively different* policy: 24/90 threshold wins, average win turn ~26, dramatically more decisive games. Total win count dipped to 39/90 — slightly lower headline number, but **62% of those wins are now genuine threshold wins** rather than 5%. This is more realistic, more aligned with the game's intended victory condition, and substantially better for any meaningful "RL learned to win at this Catan variant" claim.
+
+We also added an **inference-time threshold override** as a safety net (`RLAgent.threshold_override`): when within one Build of WIN_THRESHOLD, force the closing move instead of trusting the policy. A no-op for the current aggressive policy but insurance against future cautious-plateau retrains.
+
+| 90-game eval (current model) | Count | % |
+|---|---|---|
+| **Genuine threshold wins (≥10 PP before turn 200)** | **24** | **27%** |
+| Turn-cap fallback "wins" (highest PP at turn 200) | 15 | 17% |
+| Losses | 51 | 57% |
+
+Average win turn (threshold wins): ~26. The current policy is a *fast-aggressive* strategy that prioritizes reaching the win condition over hoarding intermediate-PP positions.
 
 ---
 
 ## Architecture (final)
 
-### Core engine (10 modules, 165 tests passing)
+### Core engine (12 modules, 167 tests passing)
 
 **`data_types.py`** — enums, dataclasses, balance constants
 - 6 resources, 3 build types, 6 action types, 5 dev cards, 7 ports
@@ -30,7 +46,7 @@ The RL agent **convincingly** beats two Greedys (60-game evaluation). MCTS reach
 
 **`board.py`** — hex board with axial coords
 - 19-tile layout (rebalanced: 3 wood / 3 stone / 3 metal / 4 wheat / 3 water / 2 cow / 1 desert — cow bumped from 1 to address city-upkeep bottleneck)
-- Intersection/edge derivation, port placement, spatial queries
+- Intersection/edge derivation, **port placement (rewritten — original logic was buggy, never placed any ports)**, spatial queries
 
 **`game_state.py`** — state management with shared turn-transition helpers
 - `roll_dice`, `roll_rain`, `roll_barn_day`, `apply_rain`, `apply_barn_day`
@@ -48,8 +64,10 @@ The RL agent **convincingly** beats two Greedys (60-game evaluation). MCTS reach
 **`environment.py`** — game loop
 - Snake draft, weather + dice production, action loop, maintenance
 - Failure-cap guard (force end-turn after 5 consecutive failed actions) prevents stubborn-rejection loops
-- Optional `renderer` parameter for terminal visualization
+- Optional `renderer` parameter for terminal or GUI visualization
 - Per-action `on_action_result` callback gives agents rejection memory
+- **Catan-style instant win**: `is_game_over()` is checked after every action, not just at end-of-turn — a build that crosses 10 PP ends the game immediately; maintenance can never silently revert a win
+- **Per-turn trade cap (10)**: prevents agents (especially Greedy) from spamming hundreds of slight trade variations per turn
 
 **`upkeep.py`** — shared upkeep helpers
 - `total_upkeep_cost`, `upkeep_gap`, `buildings_at_risk`, `upkeep_pressure_from_obs`
@@ -59,6 +77,14 @@ The RL agent **convincingly** beats two Greedys (60-game evaluation). MCTS reach
 - Hex board (colored tile glyphs + dice numbers), buildings/roads listing, live dashboard with per-player stat one-liner
 - `TerminalRenderer` wires into `Environment` via optional `renderer` parameter
 - `render_final_stats(GameResult)` end-of-game summary
+
+**`visualization/gui.py`** — matplotlib GUI (Colonist-inspired)
+- Real pointy-top hexagons via `RegularPolygon`, white "dice tokens" with red text for 6/8
+- On-board roads (colored line segments on edges), settlements (circles), cities (squares with cross) at intersections
+- Coastal port markers (colored diamonds with `2:1` / `3:1` labels) tethered to their coast intersection
+- Right-side panels: one per player, showing agent type (Greedy / MCTS / RL), PP / threshold, colored resources, dev cards, full stat line
+- Bottom panel: bank supply + last 6 action-log lines with weather and trade events highlighted
+- Used for video demos via `python -m civsim.demo --gui --agents greedy,greedy,rl --pause 0.4 --seed 42`
 
 **`evaluation.py`** — tournament + metrics + replay logging
 
@@ -70,11 +96,12 @@ The RL agent **convincingly** beats two Greedys (60-game evaluation). MCTS reach
 
 **`RandomAgent`** — baseline; 50/50 trade response.
 
-**`GreedyAgent`** — heuristic scoring with three layers of awareness:
+**`GreedyAgent`** — heuristic scoring with four layers of awareness:
 - **Upkeep-aware**: heavy EndTurn penalty when buildings would fail upkeep; MAINTENANCE-card spike to top priority; refuse to spend critical water/cow reserves; preemptive stockpile trades; refuse dev-card buy if water would drop below upkeep need.
 - **Target-aware**: per-action scores scale by `urgency = my_pp / WIN_THRESHOLD`. Cities ramp up sharply as urgency rises; roads ramp down; dev cards de-prioritized; trade scoring includes a city-ingredient bonus near the win line.
+- **Port-aware**: shared draft heuristic awards a bonus for intersections that have a port attached (+7 for specific 2:1, +3.5 for generic 3:1), making border intersections with port access competitive against interior intersections with strong pip counts.
 - **Per-turn rejection memory**: failed actions get a -10000 penalty so the agent doesn't loop on rejected trades.
-- Shared draft heuristic favors water/cow-adjacent intersections (pip-weighted).
+- Shared draft heuristic also favors water/cow-adjacent intersections (pip-weighted).
 
 **`MCTSAgent`** — Monte Carlo Tree Search with several adaptations for our action space:
 - Standard 4 phases, but uses the shared `state.end_player_turn` / `start_player_turn` helpers so rollouts match the live environment exactly.
@@ -91,9 +118,10 @@ The RL agent **convincingly** beats two Greedys (60-game evaluation). MCTS reach
 - 14-dim action encoder (one-hot type + build/dev-card subtypes)
 - Shared trunk → policy head (dot-product action scoring) + value head
 - Training: stochastic sampling with temperature annealing; trajectory storage; gradient clipping
-- Inference: argmax over policy (deterministic)
+- Inference: argmax over policy (deterministic) + **threshold override** safety net for closing moves
+- Optional behavior-cloning warm start (`civsim/rl/imitation.py`) — collects demos from Greedy threshold-wins and BC-pretrains the policy. Experimental — current results regressed vs no-BC baseline; left in the codebase for future tuning.
 
-### Test suite — 165 tests across 16 files
+### Test suite — 171 tests across 16 files
 
 | Test File | Tests | Coverage |
 |---|---|---|
@@ -106,9 +134,9 @@ The RL agent **convincingly** beats two Greedys (60-game evaluation). MCTS reach
 | test_full_game.py | 3 | End-to-end games, tournaments |
 | test_game_state.py | 11 | Dice, production, maintenance, game-over, observations |
 | test_mcts.py | 13 | UCB1/PUCT, node selection, MCTS agent play |
-| test_p2p_trade.py | 12 | Proposal generation, accept/reject, stats, simulation safety |
+| test_p2p_trade.py | 14 | Proposal generation, accept/reject, stats, simulation safety, per-turn trade cap |
 | test_rain.py | 7 | Rain mechanic, starting water stockpile |
-| test_rl.py | 24 | Feature encoding, network forward, agent modes, training |
+| test_rl.py | 28 | Feature encoding, network forward, agent modes, training, threshold override |
 | test_stats.py | 9 | Live PlayerStats accumulation across every flow |
 | test_target_aware.py | 7 | Urgency scaling, city/road scoring, sustain buffer |
 | test_upkeep.py | 9 | Upkeep helpers, Greedy synthetic scenarios, RL encoder integration |
@@ -230,7 +258,7 @@ Standard board: 3 wood / 3 stone / 3 metal / 4 wheat / 3 water / 2 cow / 1 deser
 
 1. **Game balance is the bottleneck for agent learning, not agent intelligence** — a pre-balance project produced uniformly 0-PP games regardless of agent type. The visualization made this obvious; the balance pass (rain, barn day, slower upkeep, cow-only cities, PP recalibration) made the game actually playable.
 
-2. **Learned policies dominate fixed-budget tree search in this domain.** At 50 simulations across ~60 actions per turn, even a well-engineered MCTS (pruning, PUCT, RL-derived priors, decisive shortcuts) lands at Greedy parity. The trained RL policy beats both at 70% wins.
+2. **Learned policies dominate fixed-budget tree search in this domain.** At 50 simulations across ~60 actions per turn, even a well-engineered MCTS (pruning, PUCT, RL-derived priors, decisive shortcuts) lands at Greedy parity. The trained RL policy still beats both, though margin narrowed once Greedy got port awareness.
 
 3. **Naive AlphaZero-lite doesn't work.** Plugging the value head from a separately-trained RL agent into MCTS *hurt* performance. Plugging the policy head as PUCT prior raised average PP from 3.8 → 7.8 but produced zero wins — a "careful plateau" where MCTS reaches winning positions but second-guesses the winning move. The fix is joint training (MCTS in the loop during RL training), which is the full AlphaZero recipe and a much larger engineering investment than half-measures.
 
@@ -241,12 +269,27 @@ Standard board: 3 wood / 3 stone / 3 metal / 4 wheat / 3 water / 2 cow / 1 deser
 
 5. **Self-play matters.** RL training vs Greedy alone reached 60% win rate; adding 300 episodes of snapshot self-play pushed it to 70% with games ending faster and at higher PP averages. Total cost: 36 seconds of compute.
 
+6. **Reward shaping was a dead end here.** Attempts to push RL beyond stalling at 8 PP by bumping the win bonus (+10/-5 → +100/-50) and adding a per-action penalty (-0.1) *regressed* the policy — first to 33% win rate (over-corrected: agent learned "do nothing"), then to 53%. Reverting to ±10/-5 recovered the baseline.
+
+7. **Imitation learning (behavior cloning) also regressed.** We collected ~5000 (state, action) demonstrations from Greedy threshold-winning games and BC-pretrained the policy for 30 epochs. Result: win rate dropped to 36.7% (worse than the 46% baseline), avg PP 0.2. Diagnosis: BC loss converged to 3.37 = ~3.4% probability on chosen action — barely better than random selection among ~30 valid actions. Variable action-set lengths make the BC objective noisy; the policy network couldn't fit demos efficiently and the gradient pulled weights off the helpful random init. Bigger demo sets / longer BC might fix this — left as future work.
+
+8. **Training stochasticity matters more than expected.** Retraining from scratch with identical code and hyperparameters produced **qualitatively different policies**: one run produced a cautious-plateau policy (2/90 threshold wins, max PP 10, won via turn-cap tiebreaker 40 times), a later run produced an aggressive-pusher policy (24/90 threshold wins, fastest win at turn 20). Same architecture, same reward function — but the RNG seed during training apparently steers the policy into one local minimum or another. This is a real practical concern for reproducibility and suggests training multiple models and picking the strongest is a useful workflow.
+
+9. **The inference-time threshold override** (`RLAgent.threshold_override`, default on) is a safety net: when within one Build of WIN_THRESHOLD, force a closing move (city/settlement/road+settlement) instead of the policy's pick. Currently a no-op for the aggressive-pusher policy but inexpensive insurance against future cautious-plateau retrains.
+
+10. **Measure win rate by the game's victory condition, not by the engine's tiebreaker.** The 47%-headline cautious policy and 43%-headline aggressive policy looked nearly identical by total win count, but the composition was inverted: the cautious one won ~95% via turn-cap fallback (which is essentially "I outscored you when neither of us actually won"), the aggressive one wins ~62% via genuine threshold crossings. The aggressive policy is dramatically *better* at the game even though the headline number is marginally lower — because reaching 10 PP is what the game is asking for, and stalling at 8 PP to outscore at the cap is gaming the tiebreaker. For a CS 4701 project, the lesson is: pick the metric that aligns with the goal (here: win condition), not the metric that's easiest to measure (engine.winner).
+
+7. **Stronger heuristics narrow RL's lead.** Adding port-aware drafting + the per-turn trade cap improved Greedy enough that RL's win rate dropped from 70% to ~46%. This is not a regression — it's the heuristic competing more effectively in a better-balanced game. The relative ordering (RL > Greedy ≈ MCTS > Random) holds, just with smaller gaps.
+
+8. **The port-placement bug went undetected for the entire project until the GUI demanded visible markers.** This is a case study in why visualization matters even for non-presentation purposes: a static feature like ports being broken can hide indefinitely if no one looks for it.
+
 ---
 
 ## Future directions (if extending the project)
 
 - **Full AlphaZero**: train the RL network with MCTS in the loop (MCTS provides training targets, policy provides priors, value head provides bootstrapping). Likely the only path to MCTS > Greedy in this environment.
 - **ISMCTS / multiple determinizations** for the partial-info problem in MCTS.
-- **Larger network + more training** to push RL above 70%.
+- **Larger network + longer training** to push RL above 50% post-balance. Current trunk is 128 → 64; bumping to 256 → 128 with 1000+ episodes might recover the original 70% margin.
 - **Cross-evaluation matrix**: all-pairs tournament across Random / Greedy / MCTS / RL with confidence intervals.
 - **Action-space refactor**: the p2p trade variants currently dominate the action space. A categorical "trade with player X for resource Y" with continuous quantity might be cleaner for both MCTS and RL.
+- **In-game build-position scoring**: Greedy picks build positions arbitrarily during gameplay (only the *draft* heuristic considers position quality). Adding the draft scorer to in-game settlement-build choices would likely make Greedy stronger still.

@@ -171,7 +171,16 @@ class Board:
         return (h2.q, h2.r) in self.hex_neighbors(h1.q, h1.r)
 
     def _place_standard_ports(self, rng: random.Random) -> None:
-        # Find border intersections (adjacent to < 3 tiles on the board)
+        """Place 9 ports on the coast — one per selected border intersection.
+
+        Historical note: an older version of this routine looked for
+        "coast edges" (edges between two border intersections), but
+        `_derive_edges` doesn't create such edges (coast-adjacent border
+        intersections only share 1 on-board tile, not the 2 required).
+        That left every game with 0 placed ports. The current version
+        attaches each port to a single border intersection, spaced
+        roughly every other one around the coast.
+        """
         border_inters = [
             i for i in self.intersections.values()
             if len(i.adjacent_tiles) < 3
@@ -186,22 +195,29 @@ class Board:
         )
         rng.shuffle(port_types)
 
-        # Group border intersections into pairs that share an edge
-        border_ids = {i.inter_id for i in border_inters}
-        border_edges = [
-            e for e in self.edges.values()
-            if e.intersections[0] in border_ids and e.intersections[1] in border_ids
-        ]
+        # Sort border intersections by angle around the board center so
+        # we can space ports evenly (every other one) on the coast.
+        import math
+        def _angle(inter):
+            tiles = [self.tiles[tid] for tid in inter.adjacent_tiles]
+            # Approximate intersection position as centroid of its tiles
+            cx = sum(t.q + t.r / 2 for t in tiles) / len(tiles)
+            cy = sum(t.r for t in tiles) / len(tiles)
+            return math.atan2(cy, cx)
+        sorted_borders = sorted(border_inters, key=_angle)
 
-        for i, edge in enumerate(border_edges):
+        # Skip every other intersection so ports don't crowd together
+        spaced = sorted_borders[::2]
+        rng.shuffle(spaced)
+
+        for i, inter in enumerate(spaced):
             if i >= len(port_types):
                 break
             pt = port_types[i]
             ratio = 3 if pt == PortType.GENERIC else 2
-            port = Port(port_type=pt, intersection_ids=list(edge.intersections), ratio=ratio)
+            port = Port(port_type=pt, intersection_ids=[inter.inter_id], ratio=ratio)
             self.ports.append(port)
-            for iid in edge.intersections:
-                self.intersections[iid].port = pt
+            inter.port = pt
 
     # ── Spatial Queries ──────────────────────────────────────────────────
 

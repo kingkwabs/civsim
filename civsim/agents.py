@@ -392,12 +392,13 @@ class GreedyAgent(Agent):
 def _score_draft_position(
     obs: Observation, valid_positions: list[IntersectionID]
 ) -> IntersectionID:
-    """Shared draft heuristic: combine pip-count with a strong bonus for
-    settlements that touch reliable upkeep resources (water and cow).
+    """Shared draft heuristic: combine pip-count with bonuses for upkeep
+    resources (water/cow adjacent) and port access.
 
-    Why this matters: settlements cost 1 water/turn to maintain. If a draft
-    pick doesn't sit next to a decent-probability water tile, the player
-    will lose the building within a few turns regardless of in-game play.
+    Why upkeep matters: settlements cost 1 water/turn to maintain.
+    Why ports matter: a 2:1 specific port halves the cost of converting
+    surplus into a needed resource — a meaningful lever throughout the
+    game. Generic 3:1 ports are weaker but still beat the 4:1 bank.
     """
     best_score = -1.0
     best_pos = valid_positions[0]
@@ -416,6 +417,13 @@ def _score_draft_position(
             elif tile.resource == ResourceType.COW:
                 upkeep_access += pips * 1.2
         score += upkeep_access
+        # Port bonus — sized to make a 2-tile border intersection with a
+        # specific port roughly competitive with a 3-tile interior one,
+        # without overriding the strongest interior positions.
+        from .data_types import PortType
+        inter = board.intersections[iid]
+        if inter.port is not None:
+            score += 7.0 if inter.port != PortType.GENERIC else 3.5
         if score > best_score:
             best_score = score
             best_pos = iid

@@ -75,6 +75,14 @@ class RLTrainer:
         max_actions_per_turn: int = 50,
         opponent_type=None,
         opponent_factory: Optional[Callable[[int, int], list[Agent]]] = None,
+        win_bonus: float = 10.0,
+        loss_penalty: float = -5.0,
+        per_action_penalty: float = 0.0,
+        # NOTE: reward-shaping experiments (+100/-50, ±penalty) all REGRESSED
+        # from this baseline. The original ±10/-5 with no per-action term
+        # gives the best win rate (~70% vs 2 Greedy after self-play). The
+        # "stall at 8 PP" behavior is a policy-architecture limitation,
+        # not a reward signal one — see PROGRESS.md.
     ):
         """
         opponent_factory: if provided, called as factory(episode_idx, seed)
@@ -97,6 +105,14 @@ class RLTrainer:
 
         self.optimizer = optim.Adam(network.parameters(), lr=lr)
         self.stats = TrainingStats()
+        # Reward shaping: large terminal bonus makes the win/loss signal
+        # dominate discounted returns (was +10/-5 which back-propagated
+        # to ~1.4 over a 200-turn game — negligible). Per-action penalty
+        # presses the policy to *finish* games quickly instead of
+        # stalling at a "good enough" PP level.
+        self.win_bonus = win_bonus
+        self.loss_penalty = loss_penalty
+        self.per_action_penalty = per_action_penalty
 
     def train(
         self,
@@ -195,13 +211,13 @@ class RLTrainer:
             if env.state.game_over:
                 break
 
-        # Final reward: add win/loss bonus to the last recorded reward
+        # Final reward: add the (now-large) win/loss bonus to the last
+        # recorded reward so the terminal signal dominates training.
         result = env.state.get_final_results()
-        bonus = 10.0 if result.winner == rl_agent.player_id else -5.0
+        bonus = self.win_bonus if result.winner == rl_agent.player_id else self.loss_penalty
         if rl_agent.rewards:
             rl_agent.rewards[-1] += bonus
         else:
-            # Edge case: no actions were taken
             rl_agent.record_reward(bonus)
 
         return result
@@ -224,14 +240,16 @@ class RLTrainer:
 
             if isinstance(action, EndTurn):
                 new_points = env.state.players[pid].progress_points
-                rl_agent.record_reward(float(new_points - old_points))
+                rl_agent.record_reward(
+                    float(new_points - old_points) + self.per_action_penalty
+                )
                 env._end_turn()
                 return
 
             execute_action(env.state, pid, action, env.agents)
 
             new_points = env.state.players[pid].progress_points
-            step_reward = float(new_points - old_points)
+            step_reward = float(new_points - old_points) + self.per_action_penalty
             rl_agent.record_reward(step_reward)
             old_points = new_points
 

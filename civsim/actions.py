@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from .data_types import (
     Action, Build, BuildType, BUILDING_COSTS, BuyDevCard, DEV_CARD_COST,
     DIVINE_COST, DivineIntervention, EndTurn, PlayDevCard, PortType,
-    ResourceDict, ResourceType, TradeProposal,
+    ResourceDict, ResourceType, TradeProposal, TRADE_CAP_PER_TURN,
 )
 
 if TYPE_CHECKING:
@@ -16,8 +16,11 @@ if TYPE_CHECKING:
 def get_valid_actions(state: GameState, player_id: int) -> list[Action]:
     actions: list[Action] = []
     actions += _get_valid_build_actions(state, player_id)
-    actions += _get_valid_trade_actions(state, player_id)
-    actions += _get_p2p_trade_actions(state, player_id)
+    # Throttle trades: once a player has burned TRADE_CAP_PER_TURN attempts
+    # this turn, stop offering trade actions entirely.
+    if state.players[player_id].trades_this_turn < TRADE_CAP_PER_TURN:
+        actions += _get_valid_trade_actions(state, player_id)
+        actions += _get_p2p_trade_actions(state, player_id)
     if _can_buy_dev_card(state, player_id):
         actions.append(BuyDevCard())
     if _can_play_dev_card(state, player_id):

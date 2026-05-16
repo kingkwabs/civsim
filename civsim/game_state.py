@@ -294,8 +294,16 @@ class GameState:
 
     def end_player_turn(self, player_id: int) -> tuple[list[MaintenanceEvent], bool]:
         """Resolve end-of-turn for `player_id`. Returns (maintenance_events,
-        skipped_maintenance). Maintenance only fires every Nth own-turn."""
+        skipped_maintenance). Maintenance only fires every Nth own-turn.
+
+        Catan-style win rule: if the player has already crossed
+        WIN_THRESHOLD, skip maintenance entirely and let the upstream
+        is_game_over check catch the win. Otherwise an at-threshold player
+        could lose buildings to upkeep and have their win silently revert.
+        """
         p = self.players[player_id]
+        if p.progress_points >= WIN_THRESHOLD:
+            return [], True  # game's over — don't fire maintenance
         p.turns_since_maintenance += 1
         if p.turns_since_maintenance >= MAINTENANCE_TURN_INTERVAL:
             events = self.resolve_maintenance(player_id)
@@ -321,4 +329,5 @@ class GameState:
         player = self.players[self.current_player]
         player.dev_card_played_this_turn = False
         player.maintenance_paid_this_turn = False
+        player.trades_this_turn = 0
         return rained, barned

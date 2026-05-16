@@ -264,3 +264,82 @@ class TestTrainer:
         assert len(stats.win_rates) == 10
         for wr in stats.win_rates:
             assert 0.0 <= wr <= 1.0
+
+
+# ── Inference-time threshold override ────────────────────────────────────
+
+class TestThresholdOverride:
+    """The override fires when RL is one build from WIN_THRESHOLD and a
+    Build action would close out the game. Synthetic tests against
+    constructed states; the override's logic is deterministic so unit
+    tests are sufficient.
+    """
+
+    def _setup(self, seed=1):
+        agents = [RandomAgent(i, seed=seed + i) for i in range(3)]
+        env = Environment(agents, num_players=3)
+        env.reset(seed=seed)
+        return env
+
+    def test_override_inactive_below_threshold(self):
+        from civsim.data_types import Build, BuildType
+        env = self._setup()
+        agent = RLAgent(player_id=0, network=None, training=False, threshold_override=True)
+        obs = env.state.get_observation(0)
+        # At fresh game start, my_pp is just the draft settlements (~4 PP).
+        # Override should not fire.
+        forced = agent._threshold_override_action(obs, [Build(BuildType.SETTLEMENT, 0)])
+        assert forced is None
+
+    def test_override_picks_city_upgrade_when_winning(self):
+        from civsim.data_types import Build, BuildType
+        env = self._setup()
+        # Manually plant enough buildings to reach exactly WIN_THRESHOLD - 2
+        inters = list(env.state.board.intersections.keys())
+        for iid in inters[:4]:
+            env.state.board.place_settlement(0, iid)
+        # 4 settlements × 2 PP = 8 PP. A city upgrade gives +2 → win.
+
+        agent = RLAgent(player_id=0, network=None, training=False, threshold_override=True)
+        obs = env.state.get_observation(0)
+        cities = env.state.board.get_valid_city_positions(0)
+        assert cities, "need a valid city upgrade for this test"
+        valid = [Build(BuildType.CITY, cities[0]), EndTurn()]
+        forced = agent._threshold_override_action(obs, valid)
+        assert forced is not None
+        assert isinstance(forced, Build) and forced.build_type == BuildType.CITY
+
+    def test_override_picks_settlement_when_it_wins(self):
+        from civsim.data_types import Build, BuildType
+        env = self._setup()
+        inters = list(env.state.board.intersections.keys())
+        for iid in inters[:4]:
+            env.state.board.place_settlement(0, iid)
+        # 4 settlements × 2 = 8 PP. A 5th settlement gives +2 → win.
+
+        agent = RLAgent(player_id=0, network=None, training=False, threshold_override=True)
+        obs = env.state.get_observation(0)
+        # Use any free intersection that has road access (simulate one)
+        # For the unit test, just hand in a Build action — override doesn't
+        # check validity, just the build_type and threshold math.
+        valid = [Build(BuildType.SETTLEMENT, 50), EndTurn()]
+        forced = agent._threshold_override_action(obs, valid)
+        assert forced is not None
+        assert isinstance(forced, Build) and forced.build_type == BuildType.SETTLEMENT
+
+    def test_override_disabled_returns_nothing(self):
+        from civsim.data_types import Build, BuildType
+        env = self._setup()
+        inters = list(env.state.board.intersections.keys())
+        for iid in inters[:4]:
+            env.state.board.place_settlement(0, iid)
+        # When threshold_override=False, the helper should never be called
+        # at all — but if it were, it should still behave sensibly.
+        agent = RLAgent(player_id=0, network=None, training=False, threshold_override=False)
+        # The agent.select_action wraps the helper; with override off it
+        # falls through to network/random. With network=None it returns
+        # rng.choice — make sure that path still works.
+        obs = env.state.get_observation(0)
+        valid = [Build(BuildType.CITY, 0)]
+        action = agent.select_action(obs, valid)
+        assert action is valid[0]

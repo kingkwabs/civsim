@@ -202,3 +202,56 @@ def test_full_game_completes_with_p2p_trade_enabled():
     for stats in result.player_stats.values():
         assert stats.player_trades >= 0
         assert stats.bank_trades >= 0
+
+
+def test_trade_cap_blocks_further_trade_actions():
+    """Once a player has hit TRADE_CAP_PER_TURN, get_valid_actions stops
+    surfacing any TradeProposal options for that player."""
+    from civsim.actions import get_valid_actions
+    from civsim.data_types import TRADE_CAP_PER_TURN
+    state = GameState.new_game(num_players=3, seed=11)
+    pid = state.current_player
+    p = state.players[pid]
+    # Give them resources so trades would otherwise appear
+    _stuff(state, pid, wood=10, stone=10, wheat=5, water=5, cow=5, metal=5)
+
+    # Below cap: trade actions should appear
+    p.trades_this_turn = TRADE_CAP_PER_TURN - 1
+    valid = get_valid_actions(state, pid)
+    assert any(isinstance(a, TradeProposal) for a in valid)
+
+    # At cap: zero trade actions
+    p.trades_this_turn = TRADE_CAP_PER_TURN
+    valid = get_valid_actions(state, pid)
+    assert not any(isinstance(a, TradeProposal) for a in valid)
+
+
+def test_executing_trade_increments_per_turn_counter():
+    """execute_trade should bump trades_this_turn for any attempt."""
+    state = GameState.new_game(num_players=3, seed=12)
+    pid = 0
+    _stuff(state, pid, wood=4)
+    state.players[pid].trades_this_turn = 0
+
+    proposal = TradeProposal(
+        offering={ResourceType.WOOD: 4},
+        requesting={ResourceType.METAL: 1},
+    )
+    execute_action(state, pid, proposal)
+    assert state.players[pid].trades_this_turn == 1
+
+    # A failed p2p trade (no responder) should also count
+    p2p_proposal = TradeProposal(
+        offering={ResourceType.WOOD: 0},  # we have 0 wood now, but offer is 0 so it might "succeed"...
+        requesting={ResourceType.METAL: 1},
+        target_player=1,
+    )
+    # Actually use a guaranteed-fail: simulation path with no agents
+    state.players[pid].resources[ResourceType.WOOD] = 1
+    fail_proposal = TradeProposal(
+        offering={ResourceType.WOOD: 1},
+        requesting={ResourceType.WATER: 1},
+        target_player=1,
+    )
+    execute_action(state, pid, fail_proposal, agents=None)  # no agents → fails
+    assert state.players[pid].trades_this_turn == 2

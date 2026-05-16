@@ -75,6 +75,9 @@ def execute_trade(
     agents: Optional[dict[int, Agent]] = None,
 ) -> ActionResult:
     player = state.players[player_id]
+    # Count every trade attempt — success or fail — toward the per-turn cap
+    # so a stubborn proposer can't burn the whole turn on rejected trades.
+    player.trades_this_turn += 1
 
     if action.target_player is not None:
         # Player-to-player trade — requires the target agent to consent.
@@ -121,7 +124,7 @@ def execute_trade(
         )
 
     else:
-        # Bank trade
+        # Bank trade (4:1, 3:1 generic port, or 2:1 specific port)
         for r, amt in action.offering.items():
             player.resources[r] -= amt
             state.bank[r] = state.bank.get(r, 0) + amt
@@ -132,7 +135,17 @@ def execute_trade(
             player.stats.total_resources_earned += amt
         player.stats.trades_made += 1
         player.stats.bank_trades += 1
-        return ActionResult(success=True, action=action, description="Bank trade")
+        # Build a description that includes the ratio + whether a port
+        # was used — otherwise port utilization is invisible in the log.
+        offered = sum(action.offering.values())
+        requested = sum(action.requesting.values()) or 1
+        ratio = offered // requested
+        if action.port_type is not None:
+            kind = "generic port" if action.port_type.name == "GENERIC" else f"{action.port_type.name.lower()} port"
+            desc = f"Port trade ({ratio}:1, {kind}): {_fmt_bundle(action.offering)} → {_fmt_bundle(action.requesting)}"
+        else:
+            desc = f"Bank trade ({ratio}:1): {_fmt_bundle(action.offering)} → {_fmt_bundle(action.requesting)}"
+        return ActionResult(success=True, action=action, description=desc)
 
 
 # ── Buy Dev Card ─────────────────────────────────────────────────────────
@@ -391,10 +404,11 @@ def _apply_divine_outcome(state: GameState, player_id: int, outcome: str) -> Non
             if i.owner == player_id and i.building == BuildType.SETTLEMENT
         ]
         if settlements:
+            from .data_types import SETTLEMENT_PP
             victim = state.rng.choice(settlements)
             victim.building = None
             victim.owner = None
-            player.progress_points -= 1
+            player.progress_points -= SETTLEMENT_PP
             player.stats.buildings_lost += 1
 
     elif outcome == "miracle":

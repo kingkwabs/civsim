@@ -109,6 +109,9 @@ class Player:
     # Increments at end-of-turn; resolve_maintenance only fires when this
     # reaches MAINTENANCE_TURN_INTERVAL.
     turns_since_maintenance: int = 0
+    # Count of trade attempts so far this turn (resets at start of own turn).
+    # Compared against TRADE_CAP_PER_TURN by get_valid_actions to throttle.
+    trades_this_turn: int = 0
     stats: "PlayerStats" = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -327,6 +330,12 @@ BARN_COW_PER_PLAYER: int = 1        # cow granted to every active player when it
 # Greedy never reached the 10-PP threshold — too much of each turn was
 # spent on upkeep churn, leaving no headroom for net accumulation.
 MAINTENANCE_TURN_INTERVAL: int = 3
+
+# Maximum trade attempts (bank + p2p, success or fail) per player per
+# own-turn. Catan-style unlimited trading led to agents — particularly
+# Greedy — spamming hundreds of slight trade variations per turn, which
+# clutters the log and slows games without changing outcomes much.
+TRADE_CAP_PER_TURN: int = 10
 
 # Progress-point reward per owned building. Calibrated so 5 settlements
 # (or 3 settlements + 1 city, etc.) cleanly maps to the 10-PP win
