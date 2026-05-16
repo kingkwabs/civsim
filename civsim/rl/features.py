@@ -1,6 +1,6 @@
 """Feature encoding: convert Observations and Actions into numeric vectors.
 
-State features (STATE_DIM = 36):
+State features (STATE_DIM = 39):
     [0:6]   my resources (wood, stone, metal, wheat, water, cow)
     [6:11]  my dev cards count per type (5 types)
     [11]    my progress points (normalized by WIN_THRESHOLD)
@@ -16,6 +16,9 @@ State features (STATE_DIM = 36):
     [33]    total opponent buildings
     [34]    available settlement positions count (normalized)
     [35]    available city upgrade positions count (normalized)
+    [36]    water upkeep gap (units short of paying upkeep, normalized by 5)
+    [37]    cow upkeep gap (normalized by 5)
+    [38]    buildings_at_risk count (normalized by 5)
 
 Action features (ACTION_DIM = 13):
     One-hot action category (6) + subtype details (7):
@@ -36,7 +39,7 @@ from ..data_types import (
 if TYPE_CHECKING:
     pass
 
-STATE_DIM = 36
+STATE_DIM = 39
 ACTION_DIM = 14
 
 
@@ -122,6 +125,13 @@ def encode_observation(obs: Observation) -> list[float]:
     valid_cities = len(board.get_valid_city_positions(obs.player_id))
     f.append(valid_settlements / 20.0)
     f.append(valid_cities / 5.0)
+
+    # Upkeep risk features [36:39]
+    from ..upkeep import buildings_at_risk_from_obs, upkeep_gap_from_obs
+    gap = upkeep_gap_from_obs(obs)
+    f.append(gap.get(ResourceType.WATER, 0) / 5.0)
+    f.append(gap.get(ResourceType.COW, 0) / 5.0)
+    f.append(buildings_at_risk_from_obs(obs) / 5.0)
 
     assert len(f) == STATE_DIM, f"Expected {STATE_DIM}, got {len(f)}"
     return f

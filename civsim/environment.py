@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from .action_executors import execute_action
 from .actions import get_valid_actions
 from .agents import Agent
 from .data_types import (
-    ActionResult, EndTurn, GameResult, Observation, ResourceType,
+    ActionResult, BuildType, EndTurn, GameResult, MAINTENANCE_TURN_INTERVAL,
+    Observation, ResourceType, STARTING_WATER_STOCKPILE,
 )
 from .game_state import GameState
 
@@ -18,15 +19,25 @@ class Environment:
     agents: dict[int, Agent]
     num_players: int = 3
     state: Optional[GameState] = None
+    renderer: Optional[Any] = None  # TerminalRenderer or compatible
 
-    def __init__(self, agents: list[Agent], num_players: int = 3):
+    def __init__(
+        self,
+        agents: list[Agent],
+        num_players: int = 3,
+        renderer: Optional[Any] = None,
+    ):
         self.num_players = num_players
         self.agents = {a.player_id: a for a in agents}
+        self.renderer = renderer
 
     def reset(self, seed: Optional[int] = None) -> Observation:
         self.state = GameState.new_game(num_players=self.num_players, seed=seed)
         self.run_snake_draft()
         self._start_turn()
+        if self.renderer is not None:
+            self.renderer.render_event("=== Draft complete, game begins ===")
+            self.renderer.render(self.state)
         return self.state.get_observation(self.state.current_player)
 
     def run_snake_draft(self) -> None:
@@ -46,6 +57,7 @@ class Environment:
             settlement_id = agent.select_draft_action(obs, valid_settlements)
             self.state.board.place_settlement(pid, settlement_id)
             self.state.players[pid].progress_points += 1
+            self.state.players[pid].stats.record_build(BuildType.SETTLEMENT)
 
             # Place road adjacent to settlement
             valid_roads = self.state.board.get_valid_draft_roads(pid, settlement_id)
@@ -54,6 +66,7 @@ class Environment:
             obs = self.state.get_observation(pid)
             road_id = agent.select_draft_road(obs, valid_roads)
             self.state.board.place_road(pid, road_id)
+            self.state.players[pid].stats.record_build(BuildType.ROAD)
 
         # Distribute starting resources
         self._distribute_starting_resources()
@@ -70,6 +83,16 @@ class Environment:
                     if self.state.bank.get(r, 0) > 0:
                         self.state.players[pid].resources[r] += 1
                         self.state.bank[r] -= 1
+                        self.state.players[pid].stats.total_resources_earned += 1
+
+        # Additive starting water stockpile (does not deduct from bank).
+        # Addresses the structural water shortage where draft-tile production
+        # alone leaves most players unable to cover even one round of upkeep.
+        for pid, p in self.state.players.items():
+            p.resources[ResourceType.WATER] = (
+                p.resources.get(ResourceType.WATER, 0) + STARTING_WATER_STOCKPILE
+            )
+            p.stats.total_resources_earned += STARTING_WATER_STOCKPILE
 
     def step(self, action) -> tuple[Observation, float, bool, dict]:
         """Execute one action. Returns (observation, reward, done, info)."""
@@ -107,17 +130,35 @@ class Environment:
         return self.state.get_final_results()
 
     def _start_turn(self) -> None:
-        """Roll dice and produce resources."""
-        self.state.roll_dice()
-        self.state.produce_resources()
-        # Reset per-turn flags
-        player = self.state.players[self.state.current_player]
-        player.dev_card_played_this_turn = False
-        player.maintenance_paid_this_turn = False
+        """Roll weather (rain / barn day), roll dice, produce resources.
+
+        Delegates to GameState.start_player_turn() so MCTS rollouts run the
+        exact same transition logic and don't drift from real gameplay.
+        """
+        rained, barned = self.state.start_player_turn()
+        if self.renderer is not None:
+            if rained:
+                self.renderer.render_event(
+                    f"🌧  Turn {self.state.turn_number}: rain — +1 water for all players"
+                )
+            if barned:
+                self.renderer.render_event(
+                    f"🐄 Turn {self.state.turn_number}: barn day — +1 cow for all players"
+                )
 
     def _run_action_loop(self, player_id: int, agent: Agent) -> None:
-        """Inner loop: get valid actions, agent picks, execute, repeat until EndTurn."""
-        max_actions = 100  # safety cap per turn
+        """Inner loop: get valid actions, agent picks, execute, repeat until EndTurn.
+
+        Safeguard: if the agent makes too many consecutive no-progress
+        attempts (e.g. repeatedly proposing trades that get rejected),
+        force-end the turn. Agents also receive a per-action callback so
+        they can remember what just failed and pick differently next time.
+        """
+        agent.on_turn_start()
+        max_actions = 100
+        max_consecutive_failures = 5
+        consecutive_failures = 0
+
         for _ in range(max_actions):
             obs = self.state.get_observation(player_id)
             valid = get_valid_actions(self.state, player_id)
@@ -127,22 +168,49 @@ class Environment:
                 self._end_turn()
                 return
 
-            execute_action(self.state, player_id, action, self.agents)
+            result = execute_action(self.state, player_id, action, self.agents)
+            agent.on_action_result(action, result.success)
+            if self.renderer is not None:
+                self.renderer.render(self.state, last_action=result)
 
             if self.state.game_over:
                 return
+
+            if result.success:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    self._end_turn()
+                    return
 
         # Forced end turn if action cap reached
         self._end_turn()
 
     def _end_turn(self) -> None:
-        """Resolve maintenance, advance player, check game over."""
+        """Resolve maintenance (every Nth own-turn per player), advance, check."""
         pid = self.state.current_player
-        self.state.resolve_maintenance(pid)
-        self.state.update_progress_points(pid)
+        events, skipped_maintenance = self.state.end_player_turn(pid)
+
+        if self.renderer is not None:
+            lost = sum(1 for e in events if not e.paid)
+            note = f"P{pid} end-of-turn"
+            if skipped_maintenance:
+                note += " (no upkeep this turn)"
+            elif lost:
+                note += f" — lost {lost} building(s) to upkeep"
+            self.renderer.render_event(note)
 
         if self.state.is_game_over():
+            if self.renderer is not None:
+                self.renderer.render(self.state)
+                self.renderer.render_event(
+                    f"=== Game over: winner = P{self.state.winner} "
+                    f"(turn {self.state.turn_number}) ==="
+                )
             return
 
         self.state.advance_player()
         self._start_turn()
+        if self.renderer is not None:
+            self.renderer.render(self.state)

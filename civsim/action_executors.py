@@ -45,6 +45,7 @@ def execute_build(state: GameState, player_id: int, action: Build) -> ActionResu
     cost = BUILDING_COSTS[action.build_type]
 
     _deduct_resources(state, player_id, cost)
+    player.stats.record_build(action.build_type)
 
     if action.build_type == BuildType.ROAD:
         state.board.place_road(player_id, action.position)
@@ -52,12 +53,14 @@ def execute_build(state: GameState, player_id: int, action: Build) -> ActionResu
 
     elif action.build_type == BuildType.SETTLEMENT:
         state.board.place_settlement(player_id, action.position)
-        player.progress_points += 1
+        from .data_types import SETTLEMENT_PP
+        player.progress_points += SETTLEMENT_PP
         return ActionResult(success=True, action=action, description=f"Built settlement at {action.position}")
 
     elif action.build_type == BuildType.CITY:
         state.board.upgrade_to_city(player_id, action.position)
-        player.progress_points += 1  # +1 additional (settlement was already 1)
+        from .data_types import CITY_PP, SETTLEMENT_PP
+        player.progress_points += (CITY_PP - SETTLEMENT_PP)  # diff from settlement
         return ActionResult(success=True, action=action, description=f"Upgraded to city at {action.position}")
 
     return ActionResult(success=False, action=action, description="Invalid build type")
@@ -73,31 +76,62 @@ def execute_trade(
 ) -> ActionResult:
     player = state.players[player_id]
 
-    if action.target_player is not None and agents:
-        # Player-to-player trade
+    if action.target_player is not None:
+        # Player-to-player trade — requires the target agent to consent.
+        # Without `agents` (e.g. inside MCTS rollouts), treat as rejected
+        # rather than silently falling through to the bank-trade path.
+        if not agents:
+            return ActionResult(
+                success=False, action=action,
+                description="Trade unresolved (no responder available)",
+            )
+
         target = state.players[action.target_player]
         target_agent = agents.get(action.target_player)
         if target_agent is None:
             return ActionResult(success=False, action=action, description="Target agent not found")
 
+        # Sanity: target must actually have the requested resources
+        if not target.can_afford(action.requesting):
+            return ActionResult(
+                success=False, action=action,
+                description=f"Trade rejected: P{action.target_player} can't cover request",
+            )
+
         obs = state.get_observation(action.target_player)
         accepted = target_agent.respond_to_trade(action, obs)
         if not accepted:
-            return ActionResult(success=False, action=action, description="Trade rejected")
+            return ActionResult(
+                success=False, action=action,
+                description=f"Trade rejected by P{action.target_player}",
+            )
 
         # Execute swap
         _transfer_resources_between(state, player_id, action.target_player,
                                     action.offering, action.requesting)
-        return ActionResult(success=True, action=action, description=f"Trade with player {action.target_player}")
+        player.stats.trades_made += 1
+        player.stats.player_trades += 1
+        target.stats.trades_made += 1
+        target.stats.player_trades += 1
+        return ActionResult(
+            success=True, action=action,
+            description=f"Trade with P{action.target_player}: "
+                        f"gave {_fmt_bundle(action.offering)} "
+                        f"got {_fmt_bundle(action.requesting)}",
+        )
 
     else:
         # Bank trade
         for r, amt in action.offering.items():
             player.resources[r] -= amt
             state.bank[r] = state.bank.get(r, 0) + amt
+            player.stats.total_resources_spent += amt
         for r, amt in action.requesting.items():
             state.bank[r] -= amt
             player.resources[r] = player.resources.get(r, 0) + amt
+            player.stats.total_resources_earned += amt
+        player.stats.trades_made += 1
+        player.stats.bank_trades += 1
         return ActionResult(success=True, action=action, description="Bank trade")
 
 
@@ -109,6 +143,7 @@ def execute_buy_dev_card(state: GameState, player_id: int) -> ActionResult:
     _deduct_resources(state, player_id, DEV_CARD_COST)
     card = state.dev_card_deck.pop()
     state.players[player_id].dev_cards.append(card)
+    state.players[player_id].stats.dev_cards_bought += 1
 
     return ActionResult(
         success=True,
@@ -129,6 +164,7 @@ def execute_play_dev_card(
     player = state.players[player_id]
     player.dev_cards.remove(action.card_type)
     player.dev_card_played_this_turn = True
+    player.stats.dev_cards_played += 1
 
     if action.card_type == DevCardType.EXPANSIONIST:
         return _execute_expansionist(state, player_id, agents)
@@ -200,6 +236,7 @@ def _execute_espionage(
     for r, amt in stolen.items():
         target.resources[r] -= amt
         state.players[player_id].resources[r] = state.players[player_id].resources.get(r, 0) + amt
+        state.players[player_id].stats.total_resources_earned += amt
 
     return ActionResult(
         success=True,
@@ -232,6 +269,7 @@ def _execute_invention(
         if state.bank.get(r, 0) > 0:
             player.resources[r] = player.resources.get(r, 0) + 1
             state.bank[r] -= 1
+            player.stats.total_resources_earned += 1
 
     return ActionResult(
         success=True,
@@ -259,6 +297,7 @@ def _execute_plunder(
             state.players[player_id].resources[resource] = (
                 state.players[player_id].resources.get(resource, 0) + amount
             )
+            state.players[player_id].stats.total_resources_earned += amount
             total_taken += amount
 
     return ActionResult(
@@ -274,6 +313,8 @@ def execute_divine_intervention(state: GameState, player_id: int) -> ActionResul
     _deduct_resources(state, player_id, DIVINE_COST)
     outcome = _sample_divine_event(state.rng)
     _apply_divine_outcome(state, player_id, outcome)
+    state.players[player_id].stats.divine_interventions += 1
+    state.players[player_id].stats.record_divine_outcome(outcome)
     return ActionResult(
         success=True,
         action=DivineIntervention(),
@@ -304,6 +345,7 @@ def _apply_divine_outcome(state: GameState, player_id: int, outcome: str) -> Non
             r = state.rng.choice(available)
             player.resources[r] = player.resources.get(r, 0) + 1
             state.bank[r] -= 1
+            player.stats.total_resources_earned += 1
             if state.bank[r] <= 0:
                 available.remove(r)
 
@@ -339,6 +381,7 @@ def _apply_divine_outcome(state: GameState, player_id: int, outcome: str) -> Non
                         if tile.resource and state.bank.get(tile.resource, 0) > 0:
                             p.resources[tile.resource] = p.resources.get(tile.resource, 0) + 1
                             state.bank[tile.resource] -= 1
+                            p.stats.total_resources_earned += 1
                             break  # 1 resource per building
 
     elif outcome == "plague":
@@ -352,6 +395,7 @@ def _apply_divine_outcome(state: GameState, player_id: int, outcome: str) -> Non
             victim.building = None
             victim.owner = None
             player.progress_points -= 1
+            player.stats.buildings_lost += 1
 
     elif outcome == "miracle":
         # Gain 2 free progress points
@@ -365,6 +409,7 @@ def _deduct_resources(state: GameState, player_id: int, cost: ResourceDict) -> N
     for r, amt in cost.items():
         player.resources[r] -= amt
         state.bank[r] = state.bank.get(r, 0) + amt
+        player.stats.total_resources_spent += amt
 
 
 def _transfer_resources_between(
@@ -379,11 +424,20 @@ def _transfer_resources_between(
     for r, amt in from_gives.items():
         from_p.resources[r] -= amt
         to_p.resources[r] = to_p.resources.get(r, 0) + amt
+        from_p.stats.total_resources_spent += amt
+        to_p.stats.total_resources_earned += amt
     for r, amt in to_gives.items():
         to_p.resources[r] -= amt
         from_p.resources[r] = from_p.resources.get(r, 0) + amt
+        to_p.stats.total_resources_spent += amt
+        from_p.stats.total_resources_earned += amt
 
 
 def _return_to_bank(state: GameState, resources: ResourceDict) -> None:
     for r, amt in resources.items():
         state.bank[r] = state.bank.get(r, 0) + amt
+
+
+def _fmt_bundle(bundle: ResourceDict) -> str:
+    parts = [f"{amt}{r.name[0]}" for r, amt in bundle.items() if amt]
+    return "+".join(parts) if parts else "∅"

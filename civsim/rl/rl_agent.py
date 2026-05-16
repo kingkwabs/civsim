@@ -129,29 +129,18 @@ class RLAgent(Agent):
     # ── Draft & Utility Methods ──────────────────────────────────────
 
     def select_draft_action(self, obs: Observation, valid_positions: list[IntersectionID]) -> IntersectionID:
-        # Use pip-counting heuristic (same as GreedyAgent/MCTSAgent)
-        best_score = -1.0
-        best_pos = valid_positions[0]
-        board = obs.board
-        for iid in valid_positions:
-            score = 0.0
-            tiles = board.get_tiles_for_intersection(iid)
-            for tile in tiles:
-                if tile.dice_number is not None:
-                    pips = 6 - abs(7 - tile.dice_number)
-                    score += pips
-            if score > best_score:
-                best_score = score
-                best_pos = iid
-        return best_pos
+        from ..agents import _score_draft_position
+        return _score_draft_position(obs, valid_positions)
 
     def select_draft_road(self, obs: Observation, valid_edges: list[EdgeID]) -> EdgeID:
         return self.rng.choice(valid_edges)
 
     def respond_to_trade(self, proposal: TradeProposal, obs: Observation) -> bool:
-        give_total = sum(proposal.requesting.values())
-        get_total = sum(proposal.offering.values())
-        return get_total >= give_total
+        # Use the shared resource-weighted heuristic. The policy network is
+        # trained to *propose* trades, not to decide on incoming ones —
+        # delegating to the heuristic gives a sensible deterministic counterparty.
+        from ..agents import _evaluate_trade_for_responder
+        return _evaluate_trade_for_responder(proposal, obs)
 
     def select_target(self, opponents: list[int]) -> int:
         return opponents[0]

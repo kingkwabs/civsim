@@ -45,7 +45,8 @@ class TestExecuteBuild:
             action = Build(BuildType.SETTLEMENT, settlements[0])
             result = execute_build(state, 0, action)
             assert result.success
-            assert state.players[0].progress_points == old_points + 1
+            from civsim.data_types import SETTLEMENT_PP
+            assert state.players[0].progress_points == old_points + SETTLEMENT_PP
 
     def test_upgrade_to_city(self, state_with_settlement):
         state = state_with_settlement
@@ -55,7 +56,9 @@ class TestExecuteBuild:
         action = Build(BuildType.CITY, cities[0])
         result = execute_build(state, 0, action)
         assert result.success
-        assert state.players[0].progress_points == old_points + 1
+        from civsim.data_types import CITY_PP, SETTLEMENT_PP
+        # Upgrading a settlement to a city should bump PP by (CITY_PP - SETTLEMENT_PP)
+        assert state.players[0].progress_points == old_points + (CITY_PP - SETTLEMENT_PP)
 
 
 class TestExecuteTrade:

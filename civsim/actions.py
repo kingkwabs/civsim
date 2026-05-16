@@ -17,6 +17,7 @@ def get_valid_actions(state: GameState, player_id: int) -> list[Action]:
     actions: list[Action] = []
     actions += _get_valid_build_actions(state, player_id)
     actions += _get_valid_trade_actions(state, player_id)
+    actions += _get_p2p_trade_actions(state, player_id)
     if _can_buy_dev_card(state, player_id):
         actions.append(BuyDevCard())
     if _can_play_dev_card(state, player_id):
@@ -96,6 +97,55 @@ def _get_valid_trade_actions(state: GameState, player_id: int) -> list[TradeProp
                     ))
 
     return trades
+
+
+def _get_p2p_trade_actions(state: GameState, player_id: int) -> list[TradeProposal]:
+    """Generate player-to-player trade proposals.
+
+    Bounded space: for each opponent and each resource the proposer has at
+    least one of, propose a 1-for-1 swap for each other resource. Plus a
+    handful of 2-for-1 surplus swaps (offering 2 of a stockpiled resource).
+
+    Worst-case per turn ≈ 2 opp × 6 offer × 5 want = 60 actions, usually far
+    fewer since players don't hold all resource types. This keeps the action
+    space tractable for MCTS/RL while still covering meaningful trades.
+    """
+    player = state.players[player_id]
+    proposals: list[TradeProposal] = []
+
+    opponents = [
+        pid for pid, p in state.players.items()
+        if pid != player_id and p.is_active and p.total_resources > 0
+    ]
+    if not opponents:
+        return proposals
+
+    held = [r for r in ResourceType if player.resources.get(r, 0) >= 1]
+    surplus = [r for r in ResourceType if player.resources.get(r, 0) >= 2]
+
+    for target in opponents:
+        # 1-for-1 swaps
+        for offer_r in held:
+            for want_r in ResourceType:
+                if want_r == offer_r:
+                    continue
+                proposals.append(TradeProposal(
+                    offering={offer_r: 1},
+                    requesting={want_r: 1},
+                    target_player=target,
+                ))
+        # 2-for-1: spend a stockpile to get something scarce
+        for offer_r in surplus:
+            for want_r in ResourceType:
+                if want_r == offer_r:
+                    continue
+                proposals.append(TradeProposal(
+                    offering={offer_r: 2},
+                    requesting={want_r: 1},
+                    target_player=target,
+                ))
+
+    return proposals
 
 
 def _can_buy_dev_card(state: GameState, player_id: int) -> bool:

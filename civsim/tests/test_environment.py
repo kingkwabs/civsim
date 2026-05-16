@@ -83,13 +83,36 @@ class TestFullGameLoop:
     def test_deterministic_games(self):
         agents1 = [RandomAgent(i, seed=100 + i) for i in range(3)]
         env1 = Environment(agents1, num_players=3)
-        r1 = env1.run_game()
+        env1.reset(seed=42)
+        while not env1.state.game_over:
+            pid = env1.state.current_player
+            from civsim.actions import get_valid_actions
+            from civsim.action_executors import execute_action
+            from civsim.data_types import EndTurn
+            obs = env1.state.get_observation(pid)
+            action = env1.agents[pid].select_action(obs, get_valid_actions(env1.state, pid))
+            if isinstance(action, EndTurn):
+                env1._end_turn()
+            else:
+                execute_action(env1.state, pid, action, env1.agents)
+        r1 = env1.state.get_final_results()
 
         agents2 = [RandomAgent(i, seed=100 + i) for i in range(3)]
         env2 = Environment(agents2, num_players=3)
-        r2 = env2.run_game()
+        env2.reset(seed=42)
+        while not env2.state.game_over:
+            pid = env2.state.current_player
+            from civsim.actions import get_valid_actions
+            from civsim.action_executors import execute_action
+            from civsim.data_types import EndTurn
+            obs = env2.state.get_observation(pid)
+            action = env2.agents[pid].select_action(obs, get_valid_actions(env2.state, pid))
+            if isinstance(action, EndTurn):
+                env2._end_turn()
+            else:
+                execute_action(env2.state, pid, action, env2.agents)
+        r2 = env2.state.get_final_results()
 
-        # Same seeds should produce same results
-        # (Note: may differ due to dict ordering, but winner should match)
+        # Same env seed + same agent seeds → identical outcomes
         assert r1.winner == r2.winner
         assert r1.turns_played == r2.turns_played

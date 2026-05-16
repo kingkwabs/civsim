@@ -15,14 +15,19 @@ from .data_types import (
 # Axial hex direction vectors
 AXIAL_DIRECTIONS = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)]
 
-# Standard Catan resource distribution (19 tiles)
+# Standard CivSim resource distribution (19 tiles).
+# Cow is bumped to 2 tiles (vs. classic Catan's 1) because cow is the
+# only upkeep resource for cities and the divine intervention cost — a
+# single tile bottlenecked the whole late game. Wood drops to 3 to keep
+# the 19-tile total; wood is the least-constrained resource (used only
+# for roads/settlements, not upkeep).
 STANDARD_RESOURCES = (
-    [ResourceType.WOOD] * 4 +
+    [ResourceType.WOOD] * 3 +
     [ResourceType.STONE] * 3 +
     [ResourceType.METAL] * 3 +
     [ResourceType.WHEAT] * 4 +
     [ResourceType.WATER] * 3 +
-    [ResourceType.COW] * 1 +
+    [ResourceType.COW] * 2 +
     [None]  # desert
 )
 

@@ -2,118 +2,251 @@
 
 ## Project Overview
 
-CivSim is a Catan-style board game engine built for CS 4701 (AI). The engine simulates a multiplayer resource-trading board game with custom mechanics (maintenance, divine intervention, unique development cards) and provides an environment for training and evaluating AI agents.
+CivSim is a Catan-style board game engine for CS 4701 (AI). It simulates a multiplayer resource-trading game with custom mechanics (per-turn maintenance, divine intervention, unique dev cards, weather events) and serves as an environment for training and evaluating four AI agents at distinct complexity tiers.
 
 ---
 
-## Completed
+## Headline Result
 
-### Core Game Engine (8 modules, 60+ functions, 101 tests passing)
+| Agent | Method | Win rate vs 2 Greedy |
+|---|---|---|
+| Random | Uniform action selection | ~3% |
+| Greedy | Hand-tuned heuristic (upkeep-aware, target-aware) | ~15% |
+| MCTS | K=5 pruning + PUCT + RL policy/value priors + tuned c_puct/temp | ~15% |
+| **RL** | Actor-Critic + REINFORCE + curriculum + self-play | **70%** |
 
-**`data_types.py`** — All enums, dataclasses, and constants
-- 6 resource types (wood, stone, metal, wheat, water, cow)
-- 3 build types, 6 action types, 5 dev card types, 7 port types
-- Full action hierarchy: Build, TradeProposal, BuyDevCard, PlayDevCard, DivineIntervention, EndTurn
-- Observation and OpponentView for partial observability
-- All cost tables: building costs, maintenance costs, dev card cost, divine cost, re-establishment costs
-- Divine event probability table (6 events)
+The RL agent **convincingly** beats two Greedys (60-game evaluation). MCTS reaches parity with Greedy. The relative ordering (Random < Greedy ≈ MCTS << RL) is methodologically clean: learned policy dominates fixed-budget tree search in this large-action-space domain.
 
-**`board.py`** — Hex board with axial coordinates
-- Standard 19-tile Catan layout generation with randomized resources and dice numbers
-- Intersection derivation (vertices shared by 3 mutually adjacent tiles)
-- Edge derivation (connections between intersections sharing 2 tiles)
-- Port placement on border edges
-- All spatial queries: valid settlements (distance rule + road adjacency), valid roads, valid cities, draft positions, abandoned buildings, port access
-- Board cloning for MCTS simulations
+---
 
-**`game_state.py`** — Core state management
-- Dice rolling (2d6) and resource production for all players
-- Bank depletion handling (partial production when bank runs low)
-- Maintenance resolution: settlements cost 1 water, cities cost 1 water + 1 cow per turn — failure means loss of ownership
-- Game over detection: progress point threshold (10), last player standing, or turn cap (200)
-- Partial observability: observations hide opponent resource details and show vague bank supply
-- State cloning via deepcopy
+## Architecture (final)
 
-**`actions.py`** — Valid action enumeration
-- Master dispatcher that collects all legal actions for current player
-- Build validation (affordability + valid board positions)
-- Bank/port trade generation (4:1 default, 3:1 generic port, 2:1 specific port)
-- Dev card purchase and play validation (one card per turn rule)
-- Divine intervention check (requires 2 cows)
-- RL encoding helpers (action_to_index, index_to_action)
+### Core engine (10 modules, 165 tests passing)
 
-**`action_executors.py`** — Execution logic for every action type
-- Build: deduct resources, place structure, award progress points
-- Trade: bank trades with ratio validation
-- Buy dev card: deduct cost, draw from shuffled deck
-- Play dev card (5 distinct effects):
-  - Expansionist: 2 free roads (agent picks positions)
-  - Espionage: steal 2 random resources from a chosen opponent
-  - Maintenance: covers all upkeep for the turn
-  - Invention: agent picks 2 resources from bank
-  - Plunder: take all of 1 resource type from every opponent
-- Divine intervention: 6 probabilistic outcomes (blessing 30%, famine 20%, earthquake 15%, prosperity 20%, plague 10%, miracle 5%)
+**`data_types.py`** — enums, dataclasses, balance constants
+- 6 resources, 3 build types, 6 action types, 5 dev cards, 7 ports
+- Build/maintenance/dev-card cost tables; weather/maintenance constants
+- `PlayerStats` with live-tracked counters (built/lost/trades/dev/divine/rain/barn/flow)
 
-**`environment.py`** — Game loop orchestration
-- Full game lifecycle: reset, snake draft, turn loop, game over
-- Snake draft: players place 2 settlements + 2 roads in snake order (1-2-3-3-2-1), then receive starting resources
-- Turn structure: dice roll, resource production, action loop (agent picks repeatedly until EndTurn), maintenance resolution, advance player
-- Gymnasium-style step interface returning (observation, reward, done, info)
+**`board.py`** — hex board with axial coords
+- 19-tile layout (rebalanced: 3 wood / 3 stone / 3 metal / 4 wheat / 3 water / 2 cow / 1 desert — cow bumped from 1 to address city-upkeep bottleneck)
+- Intersection/edge derivation, port placement, spatial queries
 
-**`evaluation.py`** — Tournament and metrics infrastructure
-- GameRunner: run single games or multi-game tournaments
-- MetricsTracker: win rates, average game length, agent comparison
-- ReplayLogger: turn-by-turn logging with JSON save/load
+**`game_state.py`** — state management with shared turn-transition helpers
+- `roll_dice`, `roll_rain`, `roll_barn_day`, `apply_rain`, `apply_barn_day`
+- `end_player_turn` (maintenance every Nth own-turn), `start_player_turn` (weather → dice → produce)
+- These helpers are shared by `Environment` and `MCTSAgent` so simulated rollouts don't drift from the live game
 
-### AI Agents
+**`actions.py`** — valid action enumeration
+- Build, bank-trade, **p2p-trade proposals (bounded 1-for-1 / 2-for-1)**, buy dev, play dev, divine intervention, end turn
+- RL encoding helpers
 
-**`agents.py`** — 4 agent implementations
+**`action_executors.py`** — execution + live stat accumulation
+- Every flow (build, trade, dev card, divine, maintenance) bumps the appropriate `PlayerStats` counter
+- p2p trades go through `target_agent.respond_to_trade`; simulation path (no agents) returns clean failure instead of falling through to a bank trade
 
-| Agent | Strategy | Strength |
-|-------|----------|----------|
-| **RandomAgent** | Uniform random over valid actions | Baseline |
-| **GreedyAgent** | Heuristic scoring (cities > settlements > roads, pip-counting for drafts) | Simple but effective |
-| **MCTSAgent** | Monte Carlo Tree Search with UCB1 selection, random rollouts, and heuristic leaf evaluation | Strong lookahead |
-| **RLAgent** | Neural network policy trained via REINFORCE with baseline | Learned strategy |
+**`environment.py`** — game loop
+- Snake draft, weather + dice production, action loop, maintenance
+- Failure-cap guard (force end-turn after 5 consecutive failed actions) prevents stubborn-rejection loops
+- Optional `renderer` parameter for terminal visualization
+- Per-action `on_action_result` callback gives agents rejection memory
 
-**MCTSAgent** — Full MCTS implementation
-- 4 phases: selection (UCB1), expansion, simulation (biased random rollout), backpropagation
-- Configurable: n_simulations (default 100), rollout_depth (default 30), exploration_constant (default sqrt(2))
-- Heuristic leaf evaluation based on relative progress points
-- State reconstruction from partial observations for simulation
-- Multi-player perspective handling during backpropagation
+**`upkeep.py`** — shared upkeep helpers
+- `total_upkeep_cost`, `upkeep_gap`, `buildings_at_risk`, `upkeep_pressure_from_obs`
+- Used by all agents and the RL state encoder so every layer has the same upkeep signal
 
-**RL System** (`civsim/rl/` package) — Complete training pipeline
-- `features.py`: State encoder (36-dim) and action encoder (14-dim) with normalized features
-- `network.py`: Actor-Critic neural network (PyTorch) with shared trunk, dot-product action scoring, and action masking
-- `rl_agent.py`: Training mode (stochastic sampling + trajectory storage) and inference mode (greedy)
-- `trainer.py`: REINFORCE with baseline — discounted returns, advantage estimation, entropy bonus, gradient clipping, temperature annealing
+**`visualization/terminal.py`** — ASCII renderer
+- Hex board (colored tile glyphs + dice numbers), buildings/roads listing, live dashboard with per-player stat one-liner
+- `TerminalRenderer` wires into `Environment` via optional `renderer` parameter
+- `render_final_stats(GameResult)` end-of-game summary
 
-### Test Suite — 101 tests across 7 test files
+**`evaluation.py`** — tournament + metrics + replay logging
+
+**`demo.py`** + **`rl_train.py`** — runnable entry points
+- `python -m civsim.demo --agents greedy,greedy,mcts` — rendered game
+- `python -m civsim.rl_train --episodes-random 300 --episodes-greedy 200 --episodes-selfplay 300 --eval-games 30`
+
+### Agents (`agents.py` + `rl/`)
+
+**`RandomAgent`** — baseline; 50/50 trade response.
+
+**`GreedyAgent`** — heuristic scoring with three layers of awareness:
+- **Upkeep-aware**: heavy EndTurn penalty when buildings would fail upkeep; MAINTENANCE-card spike to top priority; refuse to spend critical water/cow reserves; preemptive stockpile trades; refuse dev-card buy if water would drop below upkeep need.
+- **Target-aware**: per-action scores scale by `urgency = my_pp / WIN_THRESHOLD`. Cities ramp up sharply as urgency rises; roads ramp down; dev cards de-prioritized; trade scoring includes a city-ingredient bonus near the win line.
+- **Per-turn rejection memory**: failed actions get a -10000 penalty so the agent doesn't loop on rejected trades.
+- Shared draft heuristic favors water/cow-adjacent intersections (pip-weighted).
+
+**`MCTSAgent`** — Monte Carlo Tree Search with several adaptations for our action space:
+- Standard 4 phases, but uses the shared `state.end_player_turn` / `start_player_turn` helpers so rollouts match the live environment exactly.
+- **Greedy rollout policy** (not uniform random) — necessary because the ~60-action space made random rollouts uninformative.
+- **Action pruning** to top-K=5 by Greedy score before tree expansion; EndTurn always retained.
+- **PUCT** instead of vanilla UCB1, with priors from either softmaxed Greedy scores or an external policy network (configurable).
+- **Virtual Q-init**: unvisited children's Q starts at the prior estimate (instead of zero).
+- **Decisive-move shortcut**: if Greedy's top score exceeds #2 by >100 and that action hasn't already failed this turn, skip MCTS entirely.
+- **All-in detection**: if any Build would push PP to threshold, take it without searching.
+- Optional `value_network` and `policy_network` (the RL trained model). When set, MCTS uses the value head (sigmoid-squashed) as the depth-limit evaluator and/or the policy head's action probabilities as PUCT priors. Tunable temperature on policy priors.
+
+**`RLAgent`** — Actor-Critic + REINFORCE-with-baseline
+- 39-dim state encoder (resources, dev cards, PP, dice, turn, bank, opponent views, building counts, valid positions, **upkeep gap features**)
+- 14-dim action encoder (one-hot type + build/dev-card subtypes)
+- Shared trunk → policy head (dot-product action scoring) + value head
+- Training: stochastic sampling with temperature annealing; trajectory storage; gradient clipping
+- Inference: argmax over policy (deterministic)
+
+### Test suite — 165 tests across 16 files
 
 | Test File | Tests | Coverage |
-|-----------|-------|----------|
-| test_board.py | 14 | Board construction, spatial queries, mutations, cloning |
-| test_game_state.py | 11 | Init, dice, production, maintenance, game over, observations |
-| test_actions.py | 9 | Valid action enumeration, affordability checks |
-| test_executors.py | 9 | Build, trade, dev cards, divine intervention, helpers |
-| test_environment.py | 8 | Reset, snake draft, step, full game loops, determinism |
-| test_full_game.py | 3 | End-to-end games, 2-player variant, tournaments |
-| test_mcts.py | 13 | UCB1, node selection, MCTS agent gameplay, evaluation |
-| test_rl.py | 24 | Feature encoding, network forward/masking, agent modes, training |
+|---|---|---|
+| test_actions.py | 9 | Action enumeration, affordability |
+| test_balance.py | 5 | Balance pass (maintenance cadence, cow tiles, build progress) |
+| test_barn_day.py | 7 | Cow-only city upkeep, barn-day mechanic |
+| test_board.py | 14 | Board construction, spatial queries |
+| test_environment.py | 8 | Reset, snake draft, step, full game, determinism |
+| test_executors.py | 9 | Build, trade, dev cards, divine intervention |
+| test_full_game.py | 3 | End-to-end games, tournaments |
+| test_game_state.py | 11 | Dice, production, maintenance, game-over, observations |
+| test_mcts.py | 13 | UCB1/PUCT, node selection, MCTS agent play |
+| test_p2p_trade.py | 12 | Proposal generation, accept/reject, stats, simulation safety |
+| test_rain.py | 7 | Rain mechanic, starting water stockpile |
+| test_rl.py | 24 | Feature encoding, network forward, agent modes, training |
+| test_stats.py | 9 | Live PlayerStats accumulation across every flow |
+| test_target_aware.py | 7 | Urgency scaling, city/road scoring, sustain buffer |
+| test_upkeep.py | 9 | Upkeep helpers, Greedy synthetic scenarios, RL encoder integration |
+| test_visualization.py | 7 | Renderer ANSI/no-color, dashboard, env integration |
 
 ---
 
-## Remaining Features
+## What got built (full timeline)
 
-### 3. Visualization
-The `visualization/` directory is empty. A board renderer would help with debugging agent behavior and creating demos for the course presentation. Options range from terminal-based ASCII art to a browser-based hex grid using something like matplotlib or a simple HTML canvas.
+### Phase 1 — Visualization & instrumentation
+1. **Terminal hex board renderer**: ASCII tile grid with resource glyphs + dice numbers, colored ANSI output, optional buildings listing.
+2. **Live dashboard**: bank, dice, turn number, per-player resources / dev cards / progress points + per-player stat one-liner.
+3. **End-of-game summary**: `render_final_stats(GameResult)` shows buildings built per type, trades (bank vs p2p), dev cards, divine outcomes, rain/barn totals, resource flow.
+4. **Wired into `Environment`** via optional `renderer` argument; silent by default for tournaments.
 
-### 4. Richer PlayerStats Tracking
-The `PlayerStats` dataclass has fields for `buildings_lost`, `trades_made`, `divine_interventions`, `total_resources_earned`, and `total_resources_spent`, but these aren't being accumulated during gameplay. The action executors and environment need to increment these counters as actions are executed, giving detailed per-player analytics for evaluation and agent comparison.
+### Phase 2 — Stats accumulation
+- Extended `PlayerStats`: `buildings_built` per type, `maintenance_failures`, `dev_cards_bought`, `bank_trades` / `player_trades`, `divine_outcomes` histogram, `rain_received` / `barn_received`.
+- Wired counters into every resource flow: `_deduct_resources`, `_transfer_resources_between`, `produce_resources`, weather grants, build/trade/dev/divine executors, maintenance.
+- `get_final_results` now returns the live stats objects accumulated during play.
 
-### 5. Player-to-Player Trade Negotiation
-Currently `get_valid_actions` only generates bank/port trades. The spec includes AI-to-AI trade proposals where one agent offers resources to another, and the target agent's `respond_to_trade` method decides whether to accept. This requires:
-- Generating trade proposals toward specific opponents
-- Calling the target agent's `respond_to_trade` during execution
-- Handling the resource swap when accepted
+### Phase 3 — Player-to-player trade
+- `_get_p2p_trade_actions` generates bounded 1-for-1 / 2-for-1 swaps against each opponent.
+- `execute_trade` p2p path: handles agent consent, sanity-checks responder affordability, executes the swap, bumps stats on both sides.
+- Fixed the silent fall-through bug where p2p trades in MCTS rollouts (no agents) became bank trades.
+- Shared `_evaluate_trade_for_responder` heuristic with two acceptance paths (weighted gain, surplus-for-deficit) + upkeep guards.
+
+### Phase 4 — Upkeep-aware agents
+- `civsim/upkeep.py` with shared helpers consumed by Greedy, MCTS, and the RL encoder.
+- Greedy heavily penalizes EndTurn at risk, refuses water-draining dev cards, prioritizes maintenance card play.
+- MCTS rollout policy refuses EndTurn when buildings would be lost.
+- RL state vector includes water gap, cow gap, and buildings-at-risk count.
+
+### Phase 5 — Balance pass (largest single set of changes)
+The visualization + stats made one finding extremely visible: **every game ended at the turn cap with 0 progress points** because every settlement was being lost to upkeep. The structural problem was the game economy, not agent intelligence. Five sequential changes fixed it:
+
+1. **Rain mechanic** (+33% per player-turn, +1 water for every active player, additive — not from bank). +2 starting water stockpile per player.
+2. **Slower maintenance** (every 3rd of a player's own turns instead of every turn).
+3. **Rebalanced board** (cow tiles 1 → 2, wood 4 → 3 to keep 19 tiles).
+4. **Cow-only city upkeep** (was water + cow — made cities a double-bottleneck).
+5. **Barn-day mechanic** (cow's mirror of rain, same 33% rate, additive).
+
+Plus PP recalibration: **settlement = 2 PP, city = 4 PP** (was 1, 2). 5 settlements = 10 PP cleanly, cities now worth their resource investment.
+
+After this pass, Greedy reliably builds cities (4-5/game), reaches 8+ PP in many games, and wins ~15% of the time at WIN_THRESHOLD = 10.
+
+### Phase 6 — Target-aware Greedy
+- Added `urgency = my_pp / WIN_THRESHOLD` scaling to all action scores.
+- Cities ramp from 100 → 250 as urgency rises; roads decay from 30 → 9; dev cards de-prioritized near the win line.
+- Trade scoring includes a "city ingredients" bonus (metal/wheat) at high urgency.
+- Sustainability guards: refuse to upgrade to city without ≥2 cow buffer.
+
+### Phase 7 — RL training
+1. **Training driver** (`civsim/rl_train.py`) with three-phase curriculum:
+   - Phase 1: train vs 2 RandomAgents (~300 episodes, ~80s) — converges to 99% win rate.
+   - Phase 2: train vs 2 GreedyAgents (~200 episodes, ~45s) — converges to ~85% win rate during training.
+   - Phase 3: snapshot-based self-play (~300 episodes, ~36s) — snapshot every 30 eps, pool capped at 5, 30% Greedy mix to prevent equilibrium collapse.
+2. **30-game evaluation** (deterministic argmax) — **21/30 wins vs 2 Greedy = 70%**.
+3. Total training time: ~3 minutes wall-clock.
+
+### Phase 8 — MCTS rehabilitation
+The visualization + stats showed MCTS-30 was producing 0 PP, 0 cities — worse than Random. Diagnostic + iterative fixes:
+
+1. **Turn-transition drift** — MCTS had hand-rolled EndTurn handling that never picked up rain/barn/maintenance-interval changes. Fix: extract `state.end_player_turn` / `start_player_turn` so both Environment and MCTS use the same code path.
+2. **Action space explosion** — at ~60 valid actions, vanilla MCTS at 50 sims is essentially random. Fix: prune to top-K=5 by Greedy score before tree expansion.
+3. **Random rollouts** were uninformative. Fix: Greedy rollout policy.
+4. **PUCT instead of UCB1** with priors from softmaxed Greedy scores.
+5. **Virtual Q-init**: unvisited children start at prior estimate (instead of zero).
+6. **All-in detection** + **decisive-move shortcut** for obvious moves.
+7. **Rejection-aware shortcuts**: the shortcuts respect `_failed_this_turn` so MCTS doesn't loop on rejected trades.
+8. **AlphaZero-lite experiment**: tried plugging the trained RL value head into MCTS's depth-limit evaluator and the RL policy head as PUCT priors. Tuned c_puct and policy temperature.
+
+**MCTS journey final tally** (10-game samples for each step):
+
+| Variant | Wins/10 | Avg PP | Notes |
+|---|---|---|---|
+| MCTS-30 (broken) | 0 | 0.0 | Turn drift broke rollouts |
+| + Greedy rollouts | 0 | 0.0 | Still hopeless |
+| + K=8 pruning | ~17% (1/6) | 4.3 | Viable |
+| + PUCT + K=5 + virtualQ + shortcuts | 2/10 (20%) | 3.8 | Best heuristic-only result |
+| + RL value head only | 1/10 (10%) | 2.2 | Surprising regression |
+| + RL policy head only | 0/8 | 4.5 | No wins |
+| + Policy + value (full AlphaZero-lite) | 0/8 | **7.8** | Reaches 8 PP reliably; doesn't convert |
+| + Aggressive tuning (c_puct=0.5, temp=0.5) | 3/20 (**15%**) | 6.4 | Confirmed over 20 games |
+
+Final MCTS settling at ~15% — **roughly Greedy parity, not better**. The "careful plateau" at 8 PP is a real phenomenon: MCTS reaches a winning position but second-guesses the winning move. Documented as a project finding.
+
+---
+
+## Game-balance constants (final, in `data_types.py`)
+
+```python
+WIN_THRESHOLD = 10
+MAX_TURNS = 200
+BANK_STARTING_SUPPLY = 19  # per resource type
+
+SETTLEMENT_PP = 2
+CITY_PP = 4
+
+MAINTENANCE_TURN_INTERVAL = 3        # maintenance every Nth own-turn
+STARTING_WATER_STOCKPILE = 2         # additive bonus per player post-draft
+RAIN_PROBABILITY = 0.33              # per player-turn, +1 water to all active players
+BARN_PROBABILITY = 0.33              # per player-turn, +1 cow to all active players
+
+# Maintenance costs
+SETTLEMENT: 1 water/period
+CITY: 1 cow/period   (cow-only after balance pass)
+
+# Build costs (unchanged)
+ROAD: 1 wood + 1 stone
+SETTLEMENT: 1 wood + 1 stone + 1 wheat + 1 cow
+CITY: 3 metal + 2 wheat
+```
+
+Standard board: 3 wood / 3 stone / 3 metal / 4 wheat / 3 water / 2 cow / 1 desert (19 tiles).
+
+---
+
+## Project findings worth surfacing
+
+1. **Game balance is the bottleneck for agent learning, not agent intelligence** — a pre-balance project produced uniformly 0-PP games regardless of agent type. The visualization made this obvious; the balance pass (rain, barn day, slower upkeep, cow-only cities, PP recalibration) made the game actually playable.
+
+2. **Learned policies dominate fixed-budget tree search in this domain.** At 50 simulations across ~60 actions per turn, even a well-engineered MCTS (pruning, PUCT, RL-derived priors, decisive shortcuts) lands at Greedy parity. The trained RL policy beats both at 70% wins.
+
+3. **Naive AlphaZero-lite doesn't work.** Plugging the value head from a separately-trained RL agent into MCTS *hurt* performance. Plugging the policy head as PUCT prior raised average PP from 3.8 → 7.8 but produced zero wins — a "careful plateau" where MCTS reaches winning positions but second-guesses the winning move. The fix is joint training (MCTS in the loop during RL training), which is the full AlphaZero recipe and a much larger engineering investment than half-measures.
+
+4. **MCTS's structural mismatches with our environment** are mostly addressable but not at this compute budget:
+   - Partial observability → wants ISMCTS / multiple determinizations
+   - Heavy stochasticity (rain, barn day, dice) → wants chance nodes
+   - Sparse PP signal at 60-action depth → wants a learned value head — and the value head only works if co-trained with the search
+
+5. **Self-play matters.** RL training vs Greedy alone reached 60% win rate; adding 300 episodes of snapshot self-play pushed it to 70% with games ending faster and at higher PP averages. Total cost: 36 seconds of compute.
+
+---
+
+## Future directions (if extending the project)
+
+- **Full AlphaZero**: train the RL network with MCTS in the loop (MCTS provides training targets, policy provides priors, value head provides bootstrapping). Likely the only path to MCTS > Greedy in this environment.
+- **ISMCTS / multiple determinizations** for the partial-info problem in MCTS.
+- **Larger network + more training** to push RL above 70%.
+- **Cross-evaluation matrix**: all-pairs tournament across Random / Greedy / MCTS / RL with confidence intervals.
+- **Action-space refactor**: the p2p trade variants currently dominate the action space. A categorical "trade with player X for resource Y" with continuous quantity might be cleaner for both MCTS and RL.

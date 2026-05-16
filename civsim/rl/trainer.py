@@ -19,11 +19,13 @@ Usage:
 """
 from __future__ import annotations
 
+import copy
+import random
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
-from ..agents import RandomAgent
+from ..agents import Agent, RandomAgent
 from ..data_types import EndTurn, GameResult
 from ..environment import Environment
 from ..actions import get_valid_actions
@@ -72,7 +74,15 @@ class RLTrainer:
         value_coeff: float = 0.5,
         max_actions_per_turn: int = 50,
         opponent_type=None,
+        opponent_factory: Optional[Callable[[int, int], list[Agent]]] = None,
     ):
+        """
+        opponent_factory: if provided, called as factory(episode_idx, seed)
+            and must return a list of `num_players-1` opponent Agents.
+            Lets the caller mix opponent types per episode (e.g. self-play
+            with a pool of past snapshots).
+        opponent_type: legacy single-class opponent (used when no factory).
+        """
         if not HAS_TORCH:
             raise ImportError("PyTorch required for training. Install with: pip install torch")
 
@@ -83,6 +93,7 @@ class RLTrainer:
         self.value_coeff = value_coeff
         self.max_actions_per_turn = max_actions_per_turn
         self.opponent_type = opponent_type or RandomAgent
+        self.opponent_factory = opponent_factory
 
         self.optimizer = optim.Adam(network.parameters(), lr=lr)
         self.stats = TrainingStats()
@@ -110,10 +121,17 @@ class RLTrainer:
                 training=True,
                 temperature=max(0.5, 1.0 - episode / (n_episodes * 0.8)),
             )
-            opponents = [
-                self.opponent_type(player_id=i, seed=ep_seed + i if ep_seed else None)
-                for i in range(1, self.num_players)
-            ]
+            if self.opponent_factory is not None:
+                opponents = self.opponent_factory(episode, ep_seed or episode)
+                assert len(opponents) == self.num_players - 1, (
+                    f"factory returned {len(opponents)} opponents; "
+                    f"expected {self.num_players - 1}"
+                )
+            else:
+                opponents = [
+                    self.opponent_type(player_id=i, seed=ep_seed + i if ep_seed else None)
+                    for i in range(1, self.num_players)
+                ]
             all_agents = [rl_agent] + opponents
 
             # Play a game, collecting trajectory for RL agent
