@@ -1,11 +1,20 @@
 """Tests for the RL agent, feature encoding, network, and trainer."""
 import pytest
-import torch
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+requires_torch = pytest.mark.skipif(
+    torch is None,
+    reason="PyTorch is required for RL network, agent, and trainer tests",
+)
 
 from civsim.agents import RandomAgent
 from civsim.data_types import (
-    ActionType, Build, BuildType, BuyDevCard, DevCardType, EndTurn,
-    PlayDevCard, ResourceType,
+    ActionType, Build, BuildType, BuyDevCard, CITY_PP, DevCardType,
+    EndTurn, PlayDevCard, ResourceType, SETTLEMENT_PP, WIN_THRESHOLD,
 )
 from civsim.environment import Environment
 from civsim.game_state import GameState
@@ -41,6 +50,20 @@ class TestFeatureEncoding:
         f1 = encode_observation(obs)
         f2 = encode_observation(obs)
         assert f1 == f2
+
+    def test_state_encoding_uses_current_progress_point_constants(self, obs):
+        board = obs.board
+        expected_pp = 0
+        for inter in board.intersections.values():
+            if inter.owner != obs.player_id or inter.building is None:
+                continue
+            if inter.building == BuildType.SETTLEMENT:
+                expected_pp += SETTLEMENT_PP
+            elif inter.building == BuildType.CITY:
+                expected_pp += CITY_PP
+
+        features = encode_observation(obs)
+        assert features[11] == expected_pp / WIN_THRESHOLD
 
     def test_action_encoding_end_turn(self):
         f = encode_action(EndTurn())
@@ -96,6 +119,7 @@ class TestFeatureEncoding:
 
 # ── Network ──────────────────────────────────────────────────────────────
 
+@requires_torch
 class TestNetwork:
     def test_forward_pass_shapes(self):
         net = PolicyValueNetwork()
@@ -158,6 +182,7 @@ class TestNetwork:
 
 # ── RL Agent ─────────────────────────────────────────────────────────────
 
+@requires_torch
 class TestRLAgent:
     @pytest.fixture
     def env_and_agent(self):
@@ -229,6 +254,7 @@ class TestRLAgent:
 
 # ── Trainer ──────────────────────────────────────────────────────────────
 
+@requires_torch
 class TestTrainer:
     def test_compute_returns(self):
         net = PolicyValueNetwork()

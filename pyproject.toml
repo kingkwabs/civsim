@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "civsim"
+version = "0.1.0"
+description = "A Catan-inspired board-game simulation with heuristic, search, and RL agents."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "Kwabena Appiah" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+]
+gui = [
+    "matplotlib>=3.5",
+]
+rl = [
+    "torch>=2",
+]
+
+[tool.setuptools.packages.find]
+include = ["civsim*"]
+
+[tool.pytest.ini_options]
+testpaths = ["civsim/tests"]
+addopts = "-ra"
