@@ -20,11 +20,11 @@ State features (STATE_DIM = 39):
     [37]    cow upkeep gap (normalized by 5)
     [38]    buildings_at_risk count (normalized by 5)
 
-Action features (ACTION_DIM = 13):
-    One-hot action category (6) + subtype details (7):
-    [0:6]   action type one-hot: BUILD, TRADE, BUY_DEV, PLAY_DEV, DIVINE, END_TURN
-    [6:9]   build subtype one-hot: ROAD, SETTLEMENT, CITY (0s if not build)
-    [9:14]  dev card subtype one-hot: 5 types (0s if not play_dev)
+Action features (ACTION_DIM = 15):
+    One-hot action category (7) + subtype details (8):
+    [0:7]   action type one-hot: BUILD, TRADE, BUY_DEV, PLAY_DEV, DIVINE, END_TURN, REESTABLISH
+    [7:10]  build subtype one-hot: ROAD, SETTLEMENT, CITY (0s if not build/reestablish)
+    [10:15] dev card subtype one-hot: 5 types (0s if not play_dev)
 """
 from __future__ import annotations
 
@@ -32,8 +32,9 @@ from typing import TYPE_CHECKING
 
 from ..data_types import (
     Action, ActionType, Build, BuildType, BuyDevCard, DevCardType,
-    DivineIntervention, EndTurn, MAX_TURNS, Observation, PlayDevCard,
-    ReestablishBuilding, ResourceType, TradeProposal, WIN_THRESHOLD,
+    CITY_PP, DivineIntervention, EndTurn, MAX_TURNS, Observation,
+    PlayDevCard, ReestablishBuilding, ResourceType, SETTLEMENT_PP,
+    TradeProposal, WIN_THRESHOLD,
 )
 
 if TYPE_CHECKING:
@@ -60,8 +61,6 @@ def encode_observation(obs: Observation) -> list[float]:
 
     # My progress points [11]
     my_pp = 0
-    for opp in obs.opponents:
-        pass  # we need our own points
     # Count from board
     board = obs.board
     my_settlements = 0
@@ -72,10 +71,10 @@ def encode_observation(obs: Observation) -> list[float]:
         if inter.owner == obs.player_id:
             if inter.building == BuildType.SETTLEMENT:
                 my_settlements += 1
-                my_pp += 1
+                my_pp += SETTLEMENT_PP
             elif inter.building == BuildType.CITY:
                 my_cities += 1
-                my_pp += 2
+                my_pp += CITY_PP
         elif inter.owner is not None and inter.building is not None:
             opp_buildings += 1
     for edge in board.edges.values():
